@@ -112,6 +112,9 @@
       padding: 0 18px;
       border-bottom: 1px solid var(--line);
     }
+    #door-counts { display: flex; gap: 20px; margin: 0; padding: 0 18px 12px; color: var(--muted) }
+    #door-counts[hidden] { display: none }
+    #door-counts strong { color: var(--mint); margin-left: 6px }
     #camera-status, time { color: var(--muted) }
     .viewport { padding: 10px; background: #0c131f }
     .camera-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px }
@@ -188,6 +191,10 @@
   <div class="layout">
     <section class="panel" aria-labelledby="camera-heading">
       <div class="panel-head"><h2 id="camera-heading">Camera feed</h2><span id="camera-status">Connecting</span></div>
+      <p id="door-counts" role="status" hidden>
+        <span>Came in <strong id="came-in">0</strong></span>
+        <span>Left <strong id="left-count">0</strong></span>
+      </p>
       <div class="viewport"><img id="feed" alt="Annotated camera feed"></div>
     </section>
     <section class="panel" aria-labelledby="history-heading">
@@ -221,17 +228,17 @@
   function renderVisits(profiles, includeHidden = false) {
     const cards = profiles.filter(profile => includeHidden || profile.visible).map(profile => [
       profile.track_id, profile.state, profile.first_seen, profile.cameras || [], profile.visible,
-      profile.dwell_seconds == null ? null : Math.floor(profile.dwell_seconds),
+      profile.dwell_seconds == null ? null : Math.floor(profile.dwell_seconds), profile.employee,
     ]);
     const signature = JSON.stringify(cards);
     if (signature === lastVisitCards) return;
     lastVisitCards = signature;
     document.querySelector('#visits-empty').hidden = cards.length > 0;
-    visits.replaceChildren(...cards.map(([id, state, firstSeen, cameras, visible, dwell]) => {
+    visits.replaceChildren(...cards.map(([id, state, firstSeen, cameras, visible, dwell, employee]) => {
       const card = document.createElement('article');
       if (!visible) card.className = 'out-of-view';
       const title = document.createElement('strong');
-      title.textContent = `Guest #${id}`;
+      title.textContent = `${employee ? "Employee" : "Guest"} #${id}`;
       const status = document.createElement('p');
       status.textContent = state;
       const time = document.createElement('p');
@@ -371,6 +378,14 @@
       const response = await fetch('/api/status', { cache: 'no-store' });
       if (!response.ok) throw new Error('Status request failed');
       const current = await response.json();
+      const door = current.door_counts;
+      document.querySelector('#door-counts').hidden = !door;
+      if (door) {
+        const entries = document.querySelector('#came-in');
+        const exits = document.querySelector('#left-count');
+        if (entries.textContent !== String(door.came_in)) entries.textContent = door.came_in;
+        if (exits.textContent !== String(door.left)) exits.textContent = door.left;
+      }
       const count = current.total_alerts;
       const label = `${count} ${count === 1 ? 'alert' : 'alerts'}`;
       if (status.textContent !== label) status.textContent = label;

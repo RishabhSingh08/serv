@@ -85,11 +85,17 @@ function cameraChanged(camera, changes) {
     }
     delete camera.zones.dining;
     delete camera.zones.pay;
+    if (camera.door_line) camera.door_line = camera.door_line.map(([x, y]) => [1 - x, y]).reverse();
+
 
   }
   if (sourceChanged || mirrorOnly) {
     zone = null;
     camera.floor_points = null;
+    if (sourceChanged) {
+      camera.door_line = null;
+      camera.apron_color = null;
+    }
     clearCalibration();
     message('Camera source or mirroring changed. Check zones and redraw shared landmarks.');
   }
@@ -215,11 +221,34 @@ function addPoint(id, event, overlay) {
     }
   } else {
     if (zoneCamera()?.id !== id) return;
+    if (tool() === 'apron_color') {
+      const camera = zoneCamera();
+      camera.apron_color = sampleColor(card.image, point);
+      message(`Apron color sampled for ${camera.name}. Save setup to keep it.`);
+      renderControls();
+      return;
+    }
     zone ??= [];
-    if (tool() === 'exit_line' && zone.length >= 2) return;
+    if ((tool() === 'exit_line' && zone.length >= 2) || (tool() === 'door_line' && zone.length >= 3)) return;
     zone.push(point);
   }
   renderControls();
+}
+
+function sampleColor(image, [x, y]) {
+  const canvas = node('canvas');
+  canvas.width = canvas.height = 5;
+  const context = canvas.getContext('2d');
+  const left = Math.max(0, Math.min(image.naturalWidth - 5, Math.round(x * image.naturalWidth) - 2));
+  const top = Math.max(0, Math.min(image.naturalHeight - 5, Math.round(y * image.naturalHeight) - 2));
+  context.drawImage(image, left, top, 5, 5, 0, 0, 5, 5);
+  const pixels = context.getImageData(0, 0, 5, 5).data;
+  const channels = [0, 1, 2].map(channel => {
+    let sum = 0;
+    for (let i = channel; i < pixels.length; i += 4) sum += pixels[i];
+    return Math.round(sum / 25).toString(16).padStart(2, '0');
+  });
+  return `#${channels.join('')}`;
 }
 
 function svg(parent, kind, properties, content) {
@@ -261,6 +290,23 @@ function renderOverlays() {
         }
       }
     }
+    const editingDoor = tool() === 'door_line' && zoneCamera()?.id === camera.id && zone !== null;
+    const door = editingDoor ? zone : camera.door_line;
+    if (door?.length >= 2) {
+      const [[ax, ay], [bx, by]] = door;
+      svg(overlay, 'polyline', { points: `${ax * 100},${ay * 100} ${bx * 100},${by * 100}`,
+        fill: 'none', stroke: '#81f4c1', 'stroke-width': 3, 'stroke-dasharray': '6 4' });
+      if (!editingDoor) {
+        const length = Math.hypot(bx - ax, by - ay);
+        svg(overlay, 'text', { x: (ax + bx) * 50 - (by - ay) / length * 5,
+          y: (ay + by) * 50 + (bx - ax) / length * 5, fill: '#81f4c1', 'font-size': 3.5 }, 'INSIDE');
+      }
+    }
+    if (editingDoor) {
+      for (const [x, y] of zone) {
+        svg(overlay, 'circle', { cx: x * 100, cy: y * 100, r: .8, fill: '#81f4c1' });
+      }
+    }
     if (landmarkMode) {
       [...landmarks(), landmark].forEach((item, index) => {
         const point = item[camera.id];
@@ -299,7 +345,16 @@ function renderControls() {
     card.name.disabled = !editable;
     card.rules.disabled = !editable || zone !== null;
   }
-  $('zone-camera-field').hidden = $('redraw').hidden = $('apply').hidden = landmarkMode;
+  const apronMode = tool() === 'apron_color';
+  const doorMode = tool() === 'door_line';
+  $('zone-camera-field').hidden = landmarkMode;
+  $('redraw').hidden = $('apply').hidden = landmarkMode || apronMode;
+  $('redraw').textContent = doorMode ? 'Redraw door line' : 'Redraw zone';
+  $('apply').textContent = doorMode ? 'Apply door line' : 'Apply zone';
+  $('clear-feature').hidden = !apronMode && !doorMode;
+  $('clear-feature').textContent = apronMode ? 'Clear apron color' : 'Clear door line';
+  $('clear-feature').disabled = !editable || zone !== null ||
+    !(apronMode ? zoneTarget?.apron_color : zoneTarget?.door_line);
   $('plane-field').hidden = $('clear-landmarks').hidden = !landmarkMode;
   $('tool').disabled = !editable || zone !== null || Object.keys(landmark).length > 0;
   $('zone-camera').disabled = !editable || zone !== null || !zoneTarget;
@@ -317,6 +372,19 @@ function renderControls() {
     const next = setup.cameras.find(camera => !landmark[camera.id]);
     const plane = $('plane').value === 'floor' ? 'the floor' : 'a fixed plane at head height';
     $('geometry-help').textContent = `${landmarks().length} complete. Click point ${landmarks().length + 1} in ${next.name}, then match the same fixed point in the other feeds. Use at least four widely spaced points on ${plane}.`;
+  } else if (doorMode && zoneTarget) {
+    $('geometry-help').textContent = (zone?.length || 0) < 2 ?
+      'Click both ends of the doorway line in the preview, where the person’s tracking dot will cross.' :
+      'Click once on the inside of the doorway to set the entry direction, then apply the line.';
+  } else if (apronMode && zoneTarget) {
+    const help = $('geometry-help');
+    help.textContent = 'Click a solid part of the apron in the preview. Use an apron color that stands out in this room.';
+    if (zoneTarget.apron_color) {
+      const sample = node('span', '  ■');
+      sample.style.color = zoneTarget.apron_color;
+      sample.title = `Sampled apron color ${zoneTarget.apron_color}`;
+      help.append(sample);
+    }
   } else {
     $('geometry-help').textContent = zoneTarget ?
       (tool() === 'exit_line' ? 'Click the top endpoint first for an exit on the right. For an exit on the left, click the bottom endpoint first.' :
@@ -402,12 +470,28 @@ $('undo').onclick = () => {
 $('apply').onclick = () => action(async () => {
   const camera = zoneCamera();
   const key = tool();
+  if (key === 'door_line') {
+    const [a, b, p] = zone;
+    const inside = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+    if (Math.abs(inside) < 0.0001) {
+      throw new Error('Undo the last point, then click farther inside the doorway.');
+    }
+    for (const item of setup.cameras) item.door_line = null;
+    camera.door_line = inside > 0 ? [a, b] : [b, a];
+    zone = null;
+    message('Door line applied. Save setup to keep it.');
+    return;
+  }
   if (key === 'exit_line') camera.zones.exit_band = null;
   if (key === 'exit_band') camera.zones.exit_line = null;
   camera.zones[key] = zone;
   zone = null;
   message('Zone applied. Save setup to keep your changes.');
 });
+$('clear-feature').onclick = () => {
+  zoneCamera()[tool()] = null;
+  renderControls();
+};
 $('clear-landmarks').onclick = () => { clearCalibration(); renderControls(); };
 $('freeze').onclick = () => { frozen = !frozen; revision++; renderControls(); };
 $('add-camera').onclick = () => {

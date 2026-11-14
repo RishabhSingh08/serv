@@ -6,7 +6,7 @@ from .zones import Point, crosses, side
 
 @dataclass
 class Observation:
-    stable: Point | None
+    stable: Point
     seen_at: float
 
 
@@ -29,7 +29,7 @@ class DoorCounter:
                 if previous is not None:
                     previous.seen_at = now
                 continue
-            if previous is not None and previous.stable is not None and crosses(previous.stable, point, self.line):
+            if previous is not None and crosses(previous.stable, point, self.line):
                 if offset > 0:
                     self.came_in += 1
                 else:
