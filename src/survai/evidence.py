@@ -13,12 +13,15 @@ from .alerts import JsonlSink
 from .capture import Frame
 from .detectors.walkout import WalkoutEvent
 from .events import Event
+from .identity import overlap
 from .state import State
+from .tracks import Track
 
 LOG = logging.getLogger(__name__)
 PRE_ROLL = 8
 POST_ROLL = 2
 CLIP_FPS = 12
+SNAPSHOT_LOOKBACK = 3
 RETENTION_INTERVAL = 3600
 EVIDENCE_FILENAME = re.compile(r"[0-9a-f]{32}\.(jpg|mp4)")
 
@@ -48,6 +51,39 @@ class Sample:
     jpeg: bytes
 
 
+@dataclass(frozen=True)
+class SnapshotCandidate:
+    seconds: float
+    score: float
+    jpeg: bytes
+
+
+def snapshot_candidates(
+    frame: Frame, tracks: list[Track], seconds: float,
+) -> dict[int, SnapshotCandidate]:
+    height, width = frame.shape[:2]
+    candidates = {}
+    for track in tracks:
+        left, top, right, bottom = track.box
+        crop = frame[max(0, round(top * height)):round(bottom * height),
+                     max(0, round(left * width)):round(right * width)]
+        if min(crop.shape[:2]) < 8:
+            continue
+        gray = cv2.cvtColor(cv2.resize(crop, (80, 80), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+        sharpness = cv2.Laplacian(gray, cv2.CV_32F).var()
+        clipped = left <= 0.01 or right >= 0.99 or top <= 0.01 or bottom >= 0.99
+        obstruction = max((overlap(track.box, other.box) for other in tracks if track.id != other.id), default=0)
+        score = float(np.log1p(sharpness)) - 2 * clipped - 3 * obstruction
+        scale = min(1, 480 / max(crop.shape[:2]))
+        if scale < 1:
+            crop = cv2.resize(crop, (max(1, round(crop.shape[1] * scale)),
+                                     max(1, round(crop.shape[0] * scale))), interpolation=cv2.INTER_AREA)
+        ok, encoded = cv2.imencode(".jpg", crop)
+        if ok:
+            candidates[track.id] = SnapshotCandidate(seconds, score, encoded.tobytes())
+    return candidates
+
+
 @dataclass
 class PendingClip:
     event: Event
@@ -67,6 +103,7 @@ class Evidence:
         self.next_cleanup = monotonic() + RETENTION_INTERVAL
         self._cleanup()
         self.samples: deque[Sample] = deque(maxlen=PRE_ROLL * CLIP_FPS + 10)
+        self.snapshots: deque[dict[int, SnapshotCandidate]] = deque(maxlen=self.samples.maxlen)
         self.pending: list[PendingClip] = []
         self.next_sample = 0.0
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="evidence")
@@ -75,12 +112,15 @@ class Evidence:
     def wants_frame(self, seconds: float) -> bool:
         return seconds + 1e-6 >= self.next_sample
 
-    def observe(self, frame: Frame, seconds: float) -> None:
+    def observe(
+        self, frame: Frame, seconds: float, *, snapshots: dict[int, SnapshotCandidate] | None = None,
+    ) -> None:
         ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if not ok:
             return
         sample = Sample(seconds, jpg.tobytes())
         self.samples.append(sample)
+        self.snapshots.append(snapshots or {})
         self.next_sample = (int((seconds + 1e-6) * CLIP_FPS) + 1) / CLIP_FPS
         for pending in self.pending:
             if seconds <= pending.end + 1e-6:
@@ -94,11 +134,17 @@ class Evidence:
             clip_status="pending",
         )
         samples = [sample for sample in self.samples if sample.seconds >= now - PRE_ROLL]
-        if samples:
-            snapshot = next(
-                (sample for sample in reversed(samples) if sample.seconds <= walkout.last_seen_seconds),
-                samples[-1],
-            )
+        candidates = [
+            batch[walkout.track_id] for batch in self.snapshots if walkout.track_id in batch
+            and now - PRE_ROLL <= batch[walkout.track_id].seconds <= walkout.last_seen_seconds
+        ]
+        earlier = [candidate for candidate in candidates if candidate.seconds < walkout.last_seen_seconds]
+        recent = [
+            candidate for candidate in earlier
+            if candidate.seconds >= walkout.last_seen_seconds - SNAPSHOT_LOOKBACK
+        ]
+        snapshot = max(recent or earlier or candidates, key=lambda candidate: (candidate.score, candidate.seconds), default=None)
+        if snapshot is not None:
             name = f"{event.id}.jpg"
             try:
                 (self.directory / name).write_bytes(snapshot.jpeg)

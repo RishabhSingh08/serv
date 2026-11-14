@@ -10,7 +10,7 @@ from .alerts.notify import AlertNotifier
 from .capture import Capture, Frame
 from .config import WalkoutConfig
 from .detectors.walkout import WalkoutDetector
-from .evidence import Evidence
+from .evidence import Evidence, snapshot_candidates
 from .hud import annotate_walkout
 from .identity import PersonIdentities
 from .profiles import VisitProfiles
@@ -50,7 +50,8 @@ def list_cameras(limit: int = 6) -> int:
 
 def run_preview(
     config: WalkoutConfig, source: str, weights: str | None, record: Path | None, headless: bool,
-    *, output: Path = Path("alerts"), dashboard_port: int | None = None, whatsapp: bool = False,
+    *, output: Path = Path("alerts"), dashboard_port: int | None = None,
+    dashboard_port_fallback: bool = False, whatsapp: bool = False,
 ) -> int:
     if record is not None:
         if not source.isdecimal():
@@ -76,8 +77,11 @@ def run_preview(
         profiles = VisitProfiles()
         state = State()
         if dashboard_port is not None:
-            state = resources.enter_context(Dashboard(output, dashboard_port))
-            LOG.info("Dashboard at http://127.0.0.1:%d", dashboard_port)
+            dashboard = Dashboard(output, dashboard_port, allow_fallback=dashboard_port_fallback)
+            state = resources.enter_context(dashboard)
+            if dashboard.port != dashboard_port:
+                LOG.info("Port %d is busy. Using port %d instead.", dashboard_port, dashboard.port)
+            LOG.info("Dashboard at http://127.0.0.1:%d", dashboard.port)
         evidence = Evidence(output, state, config.evidence_retention_days)
         resources.callback(lambda: evidence.close(last_seconds))
         notifier = AlertNotifier(whatsapp)
@@ -128,12 +132,13 @@ def run_preview(
             flash = now < flash_until
             displayed_at = datetime.now().astimezone()
             if dashboard_port is not None:
-                profiles.update(frame, tracks, detector.visits, displayed_at)
+                profiles.update(tracks, detector.visits, displayed_at)
                 state.publish_profiles(profiles.active)
             if evidence.wants_frame(now):
+                snapshots = snapshot_candidates(mirrored, tracks, now)
                 evidence.observe(annotate_walkout(
                     mirrored.copy(), tracks, detector, vision.fps, flash, displayed_at=displayed_at,
-                ), now)
+                ), now, snapshots=snapshots)
             events = [evidence.register(event) for event in triggered]
             if window_open or dashboard_port is not None:
                 annotate_walkout(frame, tracks, detector, vision.fps, flash, displayed_at=displayed_at)

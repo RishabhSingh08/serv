@@ -75,3 +75,38 @@ def annotate(frame: Frame, tracks: list[Track], config: Config, status: str) -> 
     cv2.line(frame, a, b, (60, 140, 255), 2)
     cv2.putText(frame, status, (12, 26), 0, 0.65, (255, 255, 255), 2)
     return frame
+
+
+class MultiVision(Vision):
+    """Share detection weights while keeping ByteTrack state per source."""
+
+    def __init__(self, camera_ids: list[str], *, weights: str | None, image_size: int) -> None:
+        super().__init__(weights=weights, image_size=image_size)
+        from ultralytics.trackers.byte_tracker import BYTETracker
+        from ultralytics.utils import YAML, IterableSimpleNamespace
+        from ultralytics.utils.checks import check_yaml
+
+        settings = IterableSimpleNamespace(**YAML.load(check_yaml("bytetrack.yaml")))
+        self.trackers = {key: BYTETracker(settings) for key in camera_ids}
+
+    def batch(self, frames: dict[str, Frame]) -> dict[str, list[Track]]:
+        options = dict(conf=0.1, classes=[0], imgsz=self.image_size, verbose=False)
+        images = list(frames.values())
+        try:
+            results = self.model.predict(images, device=self.device, **options)
+        except (RuntimeError, NotImplementedError):
+            if self.device != "mps":
+                raise
+            LOG.warning("MPS batch inference failed. Continuing on CPU.")
+            self.device = "cpu"
+            self.model = YOLO(self.weights)
+            results = self.model.predict(images, device=self.device, **options)
+
+        output = {}
+        for camera, result in zip(frames, results, strict=True):
+            height, width = result.orig_shape
+            output[camera] = [
+                Track(int(track_id), "person", (x1 / width, y1 / height, x2 / width, y2 / height))
+                for x1, y1, x2, y2, track_id, *_ in self.trackers[camera].update(result.boxes.cpu().numpy())
+            ]
+        return output

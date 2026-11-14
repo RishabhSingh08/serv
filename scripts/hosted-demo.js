@@ -96,8 +96,6 @@
     addButton('Mark first guest paid', () => {
       const guest = visits.values().next().value;
       guest.state = 'PAID';
-      guest.photo_path = guest.earlierPhoto;
-      guest.photo_taken_at = guest.first_seen;
       render();
     }, 'pay');
     addButton('First guest exits', () => {
@@ -108,6 +106,7 @@
         alerts.add(id);
         dashboard.displayAlert({
           id, type: 'possible_walkout', severity: 'warning', timestamp: new Date().toISOString(),
+          snapshot_path: guest.earlierPhoto,
           message: `Simulated guest #${guest.track_id} exited without a payment confirmation.`,
         });
       }

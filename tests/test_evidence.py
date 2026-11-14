@@ -9,10 +9,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from survai.detectors.walkout import WalkoutEvent
-from survai.evidence import CLIP_FPS, RETENTION_INTERVAL, Evidence
+from survai.evidence import CLIP_FPS, RETENTION_INTERVAL, Evidence, snapshot_candidates
 from survai.events import Event
 from survai.server import create_app
 from survai.state import State
+from survai.tracks import Track
 
 
 def test_delete_false_alarm_updates_history_and_survives_clip_completion(tmp_path: Path) -> None:
@@ -77,8 +78,22 @@ def test_alert_snapshot_and_clip_lifecycle(tmp_path: Path) -> None:
     with TestClient(create_app(state, tmp_path, summary_model=None)) as client:
         assert client.get("/api/status").json()["total_alerts"] == 0
         try:
+            guest = Track(7, "person", (0.15, 0.1, 0.45, 0.9))
+            other_guest = Track(8, "person", (0.6, 0.1, 0.9, 0.9))
+            clear_frame = frame.copy()
+            clear_frame[9:81, 24:72] = (0, 0, 170)
+            clear_frame[9:81, 24:72:6] = (100, 140, 255)
+            clear_frame[9:81, 96:144] = (255, 0, 0)
             for index in range(8 * CLIP_FPS + 1):
-                evidence.observe(frame, index / CLIP_FPS)
+                now = index / CLIP_FPS
+                snapshots = {
+                    5.5: (clear_frame, [guest, other_guest]),
+                    6.25: (frame, [guest]),
+                    6.75: (clear_frame, [other_guest]),
+                }.get(now)
+                candidates = snapshot_candidates(*snapshots, now) if snapshots else None
+                evidence.observe(frame, now, snapshots=candidates)
+            assert list(tmp_path.iterdir()) == []
             event = evidence.register(WalkoutEvent(
                 track_id=7, timestamp=datetime.now(timezone.utc), source_seconds=8,
                 dwell_seconds=4, exit_type="track_lost", message="Possible walk-out.",
@@ -90,7 +105,11 @@ def test_alert_snapshot_and_clip_lifecycle(tmp_path: Path) -> None:
             pending, = client.get("/api/alerts").json()
             assert pending["clip_status"] == "pending"
             assert event.snapshot_path is not None
-            assert client.get(event.snapshot_path).headers["content-type"] == "image/jpeg"
+            snapshot = client.get(event.snapshot_path)
+            assert snapshot.headers["content-type"] == "image/jpeg"
+            photo = cv2.imdecode(np.frombuffer(snapshot.content, dtype=np.uint8), cv2.IMREAD_COLOR)
+            assert photo.shape == (72, 48, 3)
+            assert photo[:, :, 2].mean() > 150
             assert event.clip_path is not None
             assert client.get(event.clip_path).status_code == 404
 

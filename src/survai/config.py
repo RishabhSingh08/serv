@@ -88,3 +88,99 @@ class WalkoutConfig(BaseModel):
 
 def load_walkout_config(path: Path) -> WalkoutConfig:
     return WalkoutConfig.model_validate(yaml.safe_load(path.read_text()))
+
+
+class CameraConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
+    name: str
+    source: int | str
+    mirror: bool = True
+    walkout_enabled: bool = True
+    zones: dict[str, object] = Field(default_factory=dict)
+    floor_points: list[NormalizedPoint] | None = Field(default=None, min_length=4, max_length=4)
+    door_line: tuple[NormalizedPoint, NormalizedPoint] | None = None
+    apron_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+
+    @model_validator(mode="after")
+    def check_door_line(self) -> Self:
+        if self.door_line is not None and self.door_line[0] == self.door_line[1]:
+            raise ValueError("Draw the doorway with two distinct endpoints")
+        return self
+
+    def layout(self, defaults: WalkoutConfig) -> WalkoutConfig:
+        settings = defaults.model_dump()
+        zones = dict(self.zones)
+        for short, full in (("dining", "dining_zone"), ("pay", "pay_zone")):
+            if short in zones:
+                zones[full] = zones.pop(short)
+        if "exit_line" in zones and "exit_band" not in zones:
+            settings["exit_band"] = None
+        if "exit_band" in zones and "exit_line" not in zones:
+            settings["exit_line"] = None
+        return WalkoutConfig.model_validate(settings | zones)
+
+
+class IdentityConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enroll_frames: PositiveInt = 10
+    match_threshold: Annotated[float, Field(gt=0, le=1)] = 0.45
+    ambiguity_margin: Annotated[float, Field(ge=0, le=1)] = 0.08
+    min_box_height_px: PositiveInt = 120
+    max_overlap_iou: Annotated[float, Field(ge=0, le=1)] = 0.3
+    relink_seconds: PositiveFloat = 5
+    descriptor_ema: Annotated[float, Field(gt=0, le=1)] = 0.1
+    sample_every: PositiveInt = 2
+    max_floor_distance: PositiveFloat = 0.20
+
+
+class FusionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tick_hz: PositiveFloat = 10
+    max_skew_ms: PositiveFloat = 100
+    plane: Literal["floor", "head"] = "floor"
+    same_view_order: bool = False
+    max_floor_dist: PositiveFloat = 0.18
+    color_weight: Annotated[float, Field(ge=0, le=1)] = 0.15
+    min_hits: PositiveInt = 3
+    lost_grace_seconds: PositiveFloat = 2
+    forget_seconds: PositiveFloat = 30
+
+
+class FloorCalibration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    method: Literal["virtual"] = "virtual"
+    reference: str | None = None
+    landmarks: list[dict[str, object]] = Field(default_factory=list)
+    max_error: PositiveFloat = 0.05
+
+
+class MultiCameraConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cameras: list[CameraConfig] = Field(min_length=2, max_length=4)
+    identity: IdentityConfig = Field(default_factory=IdentityConfig)
+    walkout: WalkoutConfig | None = None
+    image_size: int = Field(default=416, ge=32, multiple_of=32)
+    target_fps: PositiveFloat = 12
+    fusion: FusionConfig = Field(default_factory=FusionConfig)
+    calibration: FloorCalibration | None = None
+
+    @model_validator(mode="after")
+    def unique_cameras(self) -> Self:
+        if len({camera.id for camera in self.cameras}) != len(self.cameras):
+            raise ValueError("Each camera needs a unique id")
+        if any(camera.id == "grid" for camera in self.cameras):
+            raise ValueError("Camera id 'grid' is reserved for the combined feed")
+        if sum(camera.door_line is not None for camera in self.cameras) > 1:
+            raise ValueError("Choose one camera to count doorway crossings")
+        indexes = [int(str(camera.source)) for camera in self.cameras if str(camera.source).isdecimal()]
+        if len(set(indexes)) != len(indexes):
+            raise ValueError("Each live camera needs a different index")
+        if any(isinstance(camera.source, int) and camera.source < 0 for camera in self.cameras):
+            raise ValueError("Camera indexes must be non-negative")
+        return self

@@ -1,9 +1,17 @@
 from collections import Counter, deque
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from threading import Lock
 
 from .events import Event
 from .profiles import Profile
+
+
+@dataclass(frozen=True)
+class CameraFeed:
+    name: str
+    status: str
+    fps: float = 0
+    jpeg: bytes | None = None
 
 
 class State:
@@ -21,6 +29,21 @@ class State:
         self.status = "Starting camera and model"
         self.alert_active = False
         self.profiles: dict[int, Profile] = {}
+        self.cameras: dict[str, CameraFeed] = {}
+        self.floor: dict[str, object] | None = None
+        self.door_counts: dict[str, int] | None = None
+
+    def publish_door_counts(self, came_in: int, left: int) -> None:
+        with self.lock:
+            self.door_counts = {"came_in": came_in, "left": left}
+
+    def publish_floor(self, guests: list[dict[str, object]], coverage: dict[str, object]) -> None:
+        with self.lock:
+            self.floor = {"guests": guests, "coverage": coverage}
+
+    def publish_cameras(self, cameras: dict[str, CameraFeed]) -> None:
+        with self.lock:
+            self.cameras = cameras.copy()
 
     def publish_profiles(self, profiles: dict[int, Profile]) -> None:
         with self.lock:

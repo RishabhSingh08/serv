@@ -2,15 +2,16 @@ import asyncio
 import json
 import re
 import socket
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractContextManager
 from dataclasses import asdict
+from errno import EADDRINUSE
 from pathlib import Path
 from threading import Thread
 from time import monotonic, sleep
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 from .llm import write_summary
@@ -18,15 +19,30 @@ from .state import State
 
 
 class Dashboard(AbstractContextManager[State]):
-    def __init__(self, directory: Path, port: int) -> None:
+    def __init__(
+        self, directory: Path, port: int, *, allow_fallback: bool = False,
+        configure: Callable[[FastAPI, State], None] | None = None,
+    ) -> None:
         self.state = State()
         self.socket = socket.socket()
         try:
-            self.socket.bind(("127.0.0.1", port))
-        except OSError:
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                self.socket.bind(("127.0.0.1", port))
+            except OSError as exc:
+                if exc.errno != EADDRINUSE:
+                    raise
+                if not allow_fallback:
+                    raise RuntimeError(f"Dashboard port {port} is in use. Choose another with --port.") from exc
+                self.socket.bind(("127.0.0.1", 0))
+            self.socket.listen()
+        except (OSError, RuntimeError):
             self.socket.close()
             raise
+        self.port = self.socket.getsockname()[1]
         app = create_app(self.state, directory, summary_model=None)
+        if configure is not None:
+            configure(app, self.state)
         self.server = uvicorn.Server(uvicorn.Config(app, access_log=False, log_level="warning", timeout_graceful_shutdown=1))
         self.thread = Thread(target=self.server.run, kwargs={"sockets": [self.socket]}, name="dashboard")
 
@@ -54,12 +70,13 @@ def create_app(state: State, directory: Path, summary_model: str | None) -> Fast
         return FileResponse(Path(__file__).with_name("dashboard.html"))
 
     @app.get("/api/status")
-    def status() -> dict[str, str | bool | int]:
+    def status() -> dict[str, object]:
         with state.lock:
             return {
                 "status": state.status,
                 "alert_active": state.alert_active,
                 "total_alerts": state.counts.total(),
+                "door_counts": state.door_counts,
             }
 
     @app.get("/api/alerts")
@@ -77,19 +94,13 @@ def create_app(state: State, directory: Path, summary_model: str | None) -> Fast
                     "last_seen": profile.last_seen,
                     "state": profile.state,
                     "visible": profile.visible,
-                    "photo_path": f"/api/visits/{profile.track_id}/photo" if profile.photo else None,
-                    "photo_taken_at": profile.photo_taken_at,
+                    "employee": profile.employee,
+                    "cameras": profile.cameras,
+                    "dwell_seconds": profile.dwell_seconds,
+                    "match_confidence": profile.match_confidence,
                 }
                 for profile in state.profiles.values()
             ]
-
-    @app.get("/api/visits/{track_id}/photo")
-    def visit_photo(track_id: int) -> Response:
-        with state.lock:
-            profile = state.profiles.get(track_id)
-            if profile is None or profile.photo is None:
-                raise HTTPException(404, headers={"Cache-Control": "no-store"})
-            return Response(profile.photo, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.delete("/api/alerts/{alert_id}", status_code=204)
     def delete_alert(alert_id: str) -> None:
@@ -126,13 +137,38 @@ def create_app(state: State, directory: Path, summary_model: str | None) -> Fast
 
     @app.get("/video")
     async def video(request: Request) -> StreamingResponse:
+        return video_stream(request)
+
+    @app.get("/api/cameras")
+    def cameras() -> list[dict[str, object]]:
+        with state.lock:
+            return [{"id": key, "name": feed.name, "status": feed.status, "fps": feed.fps}
+                    for key, feed in state.cameras.items()]
+
+    @app.get("/api/floor")
+    def floor() -> dict[str, object] | None:
+        with state.lock:
+            return state.floor
+
+    @app.get("/video/{camera_id}")
+    async def camera_video(request: Request, camera_id: str) -> StreamingResponse:
+        if camera_id == "grid":
+            return video_stream(request)
+        with state.lock:
+            if camera_id not in state.cameras:
+                raise HTTPException(404)
+        return video_stream(request, camera_id)
+
+    def video_stream(request: Request, camera_id: str | None = None) -> StreamingResponse:
         async def frames() -> AsyncIterator[bytes]:
-            seen = 0
+            seen = None
             while not await request.is_disconnected():
                 with state.lock:
-                    index, frame = state.frame_id, state.frame
-                if frame is not None and index != seen:
-                    seen = index
+                    if camera_id is not None and camera_id not in state.cameras:
+                        return
+                    frame = state.frame if camera_id is None else state.cameras[camera_id].jpeg
+                if frame and frame is not seen:
+                    seen = frame
                     yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
                 await asyncio.sleep(0.025)
 

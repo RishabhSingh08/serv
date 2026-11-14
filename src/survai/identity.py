@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from math import dist
 
 import cv2
@@ -12,6 +13,8 @@ from .zones import Point
 
 Box = tuple[float, float, float, float]
 Appearance = NDArray[np.float32]
+MIN_CONFIRMATION_FRAMES = 3
+CONFIRMATION_GAP_SECONDS = 0.5
 
 
 def center(box: Box) -> Point:
@@ -24,6 +27,16 @@ def overlap(a: Box, b: Box) -> float:
     height = max(0, min(a[3], b[3]) - max(a[1], b[1]))
     area = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
     return width * height / area if area > 0 else 0
+
+
+def duplicate_box(a: Box, b: Box) -> bool:
+    if overlap(a, b) < 0.9:
+        return False
+    # Compare size as well as containment so a partly visible person can
+    # still be detected in front of a larger box.
+    area_a = (a[2] - a[0]) * (a[3] - a[1])
+    area_b = (b[2] - b[0]) * (b[3] - b[1])
+    return min(area_a, area_b) >= 0.85 * max(area_a, area_b)
 
 
 def clothing_colors(frame: Frame, box: Box) -> Appearance | None:
@@ -48,7 +61,9 @@ class Identity:
     box: Box
     raw_id: int | None
     seen_at: float
-    colors: Appearance | None
+    colors: deque[Appearance] = field(default_factory=lambda: deque(maxlen=4))
+    last_color_at: float = float("-inf")
+    consecutive_frames: int = 1
     velocity: Point = (0.0, 0.0)
     occluded: bool = False
 
@@ -64,14 +79,29 @@ class PersonIdentities:
         self.distance = distance
         self.occlusion_seconds = occlusion_seconds
         self.identities: dict[int, Identity] = {}
+        self.tentative: dict[int, Identity] = {}
         self.hidden_ids: set[int] = set()
         self.next_id = 1
 
     def forget_tracker_ids(self) -> None:
         for identity in self.identities.values():
             identity.raw_id = None
+        self.tentative.clear()
+
+    def _unique_tracks(self, tracks: list[Track], now: float) -> list[Track]:
+        recent_ids = {
+            identity.raw_id for identity in self.identities.values()
+            if now - identity.seen_at < self.lost_grace
+        }
+        ranked = sorted(range(len(tracks)), key=lambda index: tracks[index].id not in recent_ids)
+        kept: list[int] = []
+        for index in ranked:
+            if all(not duplicate_box(tracks[index].box, tracks[other].box) for other in kept):
+                kept.append(index)
+        return [tracks[index] for index in sorted(kept)]
 
     def update(self, frame: Frame, tracks: list[Track], now: float) -> list[Track]:
+        tracks = self._unique_tracks(tracks, now)
         samples = [clothing_colors(frame, track.box) for track in tracks]
         for identity in self.identities.values():
             if now - identity.seen_at < self.lost_grace and not any(
@@ -95,6 +125,7 @@ class PersonIdentities:
             _, _, matched = lap.lapjv(costs, extend_cost=True, cost_limit=1.0)
 
         visible = []
+        next_tentative = {}
         for index, (track, colors) in enumerate(zip(tracks, samples, strict=True)):
             crowded = any(
                 index != other and overlap(track.box, candidate.box) >= 0.25
@@ -102,14 +133,25 @@ class PersonIdentities:
             )
             match = matched[index]
             if match < 0:
+                identity = self.tentative.get(track.id)
+                if (identity is None or now - identity.seen_at > CONFIRMATION_GAP_SECONDS
+                        or self._cost(identity, track, None, now) >= 1):
+                    identity = Identity(track.box, track.id, now)
+                else:
+                    identity.consecutive_frames += 1
+                self._refresh(identity, track, None if crowded else colors, now)
+                if identity.consecutive_frames < MIN_CONFIRMATION_FRAMES:
+                    next_tentative[track.id] = identity
+                    continue
                 key = self.next_id
                 self.next_id += 1
-                self.identities[key] = Identity(track.box, track.id, now, None if crowded else colors)
+                self.identities[key] = identity
             else:
                 key, identity = eligible[match]
                 self._refresh(identity, track, None if crowded else colors, now)
             visible.append(Track(key, track.kind, track.box))
 
+        self.tentative = next_tentative
         visible_ids = {track.id for track in visible}
         # A raw tracker ID can also jump to the person in front.
         for key, identity in self.identities.items():
@@ -123,21 +165,24 @@ class PersonIdentities:
     ) -> float:
         point = center(track.box)
         same_raw = identity.raw_id == track.id
-        span = identity.box[2] - identity.box[0]
-        radius = max(self.distance, span * 0.7)
+        span = max(identity.box[2] - identity.box[0], track.box[2] - track.box[0])
+        radius = max(0.12, self.distance, min(span * 0.75, 0.25))
         if identity.occluded:
-            radius = max(radius * 1.9, 0.16)
+            radius = max(radius * 1.6, 0.19)
         elif same_raw:
-            radius *= 1.8
-        displacement = min(dist(point, identity.predict(now)), dist(point, center(identity.box)) * 1.15)
-        if displacement > radius:
+            radius *= 1.5
+        proximity = min(dist(point, identity.predict(now)), dist(point, center(identity.box)) * 1.1)
+        intersection = overlap(identity.box, track.box)
+        if proximity > radius and intersection < 0.35:
             return 2.0
-        difference = 0.0
-        if identity.colors is not None and colors is not None:
-            difference = cv2.compareHist(identity.colors, colors, cv2.HISTCMP_BHATTACHARYYA)
-        continuity = 0.14 if same_raw else 0
+        difference = min(
+            (cv2.compareHist(sample, colors, cv2.HISTCMP_BHATTACHARYYA) for sample in identity.colors),
+            default=0.0,
+        ) if colors is not None else 0.0
+        continuity = 0.18 if same_raw else 0
         recovery = 0.10 if identity.occluded else 0
-        return 0.55 * displacement / radius + 0.75 * difference + recovery - continuity
+        geometry = min(proximity / radius, 1.15 - intersection)
+        return 0.55 * geometry + 0.68 * difference + recovery - continuity
 
     @staticmethod
     def _refresh(identity: Identity, track: Track, colors: Appearance | None, now: float) -> None:
@@ -149,7 +194,8 @@ class PersonIdentities:
             identity.velocity = (0.5 * vx + 0.5 * (x - old_x) / dt, 0.5 * vy + 0.5 * (y - old_y) / dt)
         else:
             identity.velocity = (0.0, 0.0)
-        if colors is not None:
-            identity.colors = colors if identity.colors is None else 0.8 * identity.colors + 0.2 * colors
+        if colors is not None and now - identity.last_color_at >= 0.5:
+            identity.colors.append(colors)
+            identity.last_color_at = now
         identity.box, identity.raw_id, identity.seen_at = track.box, track.id, now
         identity.occluded = False

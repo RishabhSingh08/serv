@@ -38,6 +38,13 @@
       padding: 16px 0;
       border-bottom: 1px solid var(--line);
     }
+    .session-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap }
+    .session-controls[hidden] { display: none }
+    .session-controls button { font: inherit; font-size: 13px; color: var(--text); background: var(--panel);
+      border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; cursor: pointer }
+    .session-controls button:disabled { opacity: .55; cursor: default }
+    #session-message { margin-top: 12px; color: #ffacb4 }
+    #camera-placeholder { color: var(--muted); padding: 22px 12px }
     .brand { display: flex; align-items: center; gap: 12px }
     .brand-mark {
       width: 39px;
@@ -107,6 +114,12 @@
     }
     #camera-status, time { color: var(--muted) }
     .viewport { padding: 10px; background: #0c131f }
+    .camera-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px }
+    .camera-grid figure { margin: 0 }
+    .camera-grid figcaption { color: var(--muted); font: 12px var(--mono); padding: 8px 2px }
+    .camera-grid img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: contain; background: #070c14 }
+    #floor-map { width: 100%; height: auto; display: block; background: #0b1220 }
+    @media (max-width: 540px) { .camera-grid { grid-template-columns: 1fr } }
     #demo-canvas { width: 100%; height: auto; background: #070c14; border-radius: 8px; display: block }
     .demo-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 4px 4px }
     .demo-actions button { padding: 8px 12px; color: var(--mint); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; cursor: pointer }
@@ -123,10 +136,8 @@
     .history-body { padding: 13px }
     .visits-panel { grid-column: 1 / -1 }
     #visits { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr)); gap: 10px }
-    #visits article { grid-template-columns: minmax(0, 1fr) auto }
     #visits strong { color: var(--mint) }
-    #visits img { width: 58px; height: 72px; object-fit: contain; grid-column: 2; grid-row: 1 / span 3 }
-    #visits p { grid-column: 1 }
+    #visits .out-of-view { opacity: .5 }
     #visits-empty { color: var(--muted); padding: 10px }
     #empty { padding: 18px 12px; color: var(--muted) }
     #error { margin: 0 0 10px; color: var(--red); font-size: 13px }
@@ -166,8 +177,14 @@
 <body><main>
   <header class="topbar">
     <div class="brand"><span class="brand-mark" aria-hidden="true"></span><h1>Surveillance.ai</h1></div>
+    <nav class="session-controls" id="session-controls" aria-label="Camera controls" hidden>
+      <a href="/setup">Camera setup</a>
+      <button id="mark-paid" type="button" disabled>Mark dining guests paid</button>
+      <button id="stop-cameras" type="button" disabled>Stop cameras</button>
+    </nav>
     <p id="status" class="clear" role="status">0 alerts</p>
   </header>
+  <p id="session-message" role="status" hidden></p>
   <div class="layout">
     <section class="panel" aria-labelledby="camera-heading">
       <div class="panel-head"><h2 id="camera-heading">Camera feed</h2><span id="camera-status">Connecting</span></div>
@@ -182,11 +199,15 @@
       </div>
     </section>
     <section class="panel visits-panel" aria-labelledby="visits-heading">
-      <div class="panel-head"><h2 id="visits-heading">Active visits</h2></div>
+      <div class="panel-head"><h2 id="visits-heading">Guests in view</h2></div>
       <div class="history-body">
-        <p id="visits-empty">No active visits.</p>
+        <p id="visits-empty">No guests in view.</p>
         <div id="visits"></div>
       </div>
+    </section>
+    <section id="floor-panel" class="panel visits-panel" hidden>
+      <div class="panel-head"><h2>Shared floor map</h2><p id="room-count" role="status"></p></div>
+      <canvas id="floor-map" width="720" height="380" aria-label="Guest positions and movement trails"></canvas>
     </section>
   </div>
 </main><!-- Hosted demo script --><script>
@@ -197,30 +218,35 @@
   const error = document.querySelector('#error');
   const visits = document.querySelector('#visits');
   let lastVisitCards = '';
-  function renderVisits(profiles) {
-    const cards = profiles.map(profile => [
-      profile.track_id, profile.state, profile.visible, profile.first_seen,
-      profile.photo_path, profile.photo_taken_at,
+  function renderVisits(profiles, includeHidden = false) {
+    const cards = profiles.filter(profile => includeHidden || profile.visible).map(profile => [
+      profile.track_id, profile.state, profile.first_seen, profile.cameras || [], profile.visible,
+      profile.dwell_seconds == null ? null : Math.floor(profile.dwell_seconds),
     ]);
     const signature = JSON.stringify(cards);
     if (signature === lastVisitCards) return;
     lastVisitCards = signature;
     document.querySelector('#visits-empty').hidden = cards.length > 0;
-    visits.replaceChildren(...cards.map(([id, state, visible, firstSeen, photo, takenAt]) => {
+    visits.replaceChildren(...cards.map(([id, state, firstSeen, cameras, visible, dwell]) => {
       const card = document.createElement('article');
+      if (!visible) card.className = 'out-of-view';
       const title = document.createElement('strong');
       title.textContent = `Guest #${id}`;
       const status = document.createElement('p');
-      status.textContent = `${state}${visible ? '' : ' · Out of view'}`;
+      status.textContent = state;
       const time = document.createElement('p');
       time.textContent = `First seen ${new Date(firstSeen).toLocaleTimeString()}`;
       card.append(title, status, time);
-      if (photo) {
-        const image = document.createElement('img');
-        image.src = photo;
-        image.alt = `Guest #${id} before payment`;
-        image.title = new Date(takenAt).toLocaleString();
-        card.append(image);
+      if (includeHidden || cameras.length) {
+        const details = document.createElement('p');
+        details.textContent = visible
+          ? [...cameras.map(camera => camera.toUpperCase()), `${dwell}s dining`].join(' · ')
+          : 'Out of view';
+        if (cameras.length === 1) {
+          details.textContent += ' · ●';
+          details.title = 'Visible on one camera';
+        }
+        card.append(details);
       }
       return card;
     }));
@@ -248,7 +274,7 @@
     if (event.snapshot_path) {
       const image = document.createElement('img');
       image.src = event.snapshot_path;
-      image.alt = 'Alert snapshot';
+      image.alt = 'Guest before the unpaid exit';
       image.onerror = () => image.remove();
       card.append(image);
     }
@@ -309,6 +335,37 @@
       container.textContent = labels[event.clip_status];
     }
   }
+  const viewport = document.querySelector('.viewport');
+  const sessionControls = document.querySelector('#session-controls');
+  const markPaid = document.querySelector('#mark-paid');
+  const stopCameras = document.querySelector('#stop-cameras');
+  const sessionMessage = document.querySelector('#session-message');
+  let webMode = false;
+  let sessionMode = '';
+  let cameraKey = '';
+  let sending = false;
+  function showSessionMessage(text) {
+    sessionMessage.hidden = !text;
+    sessionMessage.textContent = text;
+  }
+  async function cameraAction(action) {
+    sending = markPaid.disabled = stopCameras.disabled = true;
+    showSessionMessage('');
+    try {
+      const response = await fetch(`/api/session/${action}`, { method: 'POST' });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || 'Camera command failed.');
+      }
+    } catch (error) {
+      showSessionMessage(error.message);
+    } finally {
+      sending = false;
+      await refresh();
+    }
+  }
+  markPaid.onclick = () => cameraAction('pay');
+  stopCameras.onclick = () => cameraAction('stop');
   const refresh = async () => {
     try {
       const response = await fetch('/api/status', { cache: 'no-store' });
@@ -320,7 +377,23 @@
       status.className = count && current.alert_active ? 'alert' : 'clear';
       cameraStatus.textContent = current.status === 'Monitoring' ? 'Live' : current.status;
       const visitsResponse = await fetch('/api/visits', { cache: 'no-store' });
-      if (visitsResponse.ok) renderVisits(await visitsResponse.json());
+      const floorResponse = await fetch('/api/floor', { cache: 'no-store' });
+      const floor = floorResponse.ok ? await floorResponse.json() : null;
+      if (visitsResponse.ok) renderVisits(await visitsResponse.json(), floor !== null);
+      if (floor !== null) renderFloor(floor);
+      else document.querySelector('#floor-panel').hidden = true;
+      const cameraResponse = await fetch('/api/cameras', { cache: 'no-store' });
+      if (webMode) {
+        const sessionResponse = await fetch('/api/session', { cache: 'no-store' });
+        if (sessionResponse.ok) {
+          const session = await sessionResponse.json();
+          sessionMode = session.mode;
+          markPaid.disabled = sending || session.mode !== 'monitoring' || current.status !== 'Monitoring';
+          stopCameras.disabled = sending || !['preview', 'monitoring'].includes(session.mode);
+          if (session.error) showSessionMessage(session.error);
+        }
+      }
+      if (cameraResponse.ok) renderCameras(await cameraResponse.json());
     } catch {
       status.textContent = 'Dashboard disconnected';
       status.className = '';
@@ -328,6 +401,98 @@
       renderVisits([]);
     }
   };
+  function renderFloor(floor) {
+    document.querySelector('#floor-panel').hidden = false;
+    const count = document.querySelector('#room-count');
+    count.textContent = `Guests in room: ${floor.guests.filter(guest => guest.present).length}`;
+    const canvas = document.querySelector('#floor-map');
+    const context = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+    context.clearRect(0, 0, width, height);
+    const point = ([x, y]) => [
+      45 + Math.max(-0.05, Math.min(1.05, x)) * (width - 90),
+      30 + Math.max(-0.05, Math.min(1.05, y)) * (height - 60),
+    ];
+    context.strokeStyle = '#29394e';
+    for (let i = 0; i <= 10; i++) {
+      const q = i / 10;
+      context.beginPath();
+      context.moveTo(...point([q, 0]));
+      context.lineTo(...point([q, 1]));
+      context.moveTo(...point([0, q]));
+      context.lineTo(...point([1, q]));
+      context.stroke();
+    }
+    const palette = ['#90d3ff', '#81f4c1', '#dba2f8', '#ffcf9b', '#aed0f9'];
+    context.font = '15px monospace';
+    Object.values(floor.coverage).forEach((camera, index) => {
+      context.strokeStyle = context.fillStyle = palette[index % palette.length];
+      context.globalAlpha = 0.42;
+      context.setLineDash([5, 6]);
+      context.beginPath();
+      camera.outline.forEach((position, i) => {
+        if (i) context.lineTo(...point(position));
+        else context.moveTo(...point(position));
+      });
+      context.closePath();
+      context.stroke();
+      context.setLineDash([]);
+      context.fillText(camera.name, 45 + index * 155, height - 7);
+    });
+    for (const guest of floor.guests) {
+      context.strokeStyle = context.fillStyle = palette[(guest.id - 1) % palette.length];
+      guest.trail.slice(1).forEach((position, index) => {
+        context.globalAlpha = 0.6 * (index + 1) / guest.trail.length;
+        context.beginPath();
+        context.moveTo(...point(guest.trail[index]));
+        context.lineTo(...point(position));
+        context.stroke();
+      });
+      context.globalAlpha = guest.visible ? 1 : 0.35;
+      const [x, y] = point(guest.trail.at(-1));
+      context.beginPath();
+      context.arc(x, y, 6, 0, Math.PI * 2);
+      context.fill();
+      context.fillText(`Guest ${guest.id}`, x + 10, y - 8);
+    }
+    context.globalAlpha = 1;
+  }
+  function renderCameras(cameras) {
+    if (!cameras.length) {
+      if (webMode && (cameraKey || !document.querySelector('#camera-placeholder'))) {
+        cameraKey = '';
+        viewport.classList.remove('camera-grid');
+        const placeholder = document.createElement('p');
+        placeholder.id = 'camera-placeholder';
+        viewport.replaceChildren(placeholder);
+      }
+      const placeholder = document.querySelector('#camera-placeholder');
+      if (placeholder) placeholder.textContent = sessionMode === 'idle' ?
+        'Open Camera setup to connect previews or start monitoring.' :
+        sessionMode === 'preview' ? 'Camera previews are running in Camera setup.' : 'Waiting for camera feeds…';
+      return;
+    }
+    const key = JSON.stringify(cameras.map(camera => camera.id));
+    if (key !== cameraKey) {
+      cameraKey = key;
+      viewport.classList.add('camera-grid');
+      viewport.replaceChildren(...cameras.map(camera => {
+        const tile = document.createElement('figure');
+        const caption = document.createElement('figcaption');
+        caption.id = `camera-${camera.id}`;
+        const image = document.createElement('img');
+        image.src = `/video/${encodeURIComponent(camera.id)}`;
+        image.alt = `${camera.name} feed`;
+        tile.append(caption, image);
+        return tile;
+      }));
+    }
+    for (const camera of cameras) {
+      document.getElementById(`camera-${camera.id}`).textContent =
+        `${camera.name} · ${camera.status} · ${camera.fps.toFixed(1)} FPS`;
+    }
+  }
   if (window.startHostedDemo) {
     window.startHostedDemo({ renderVisits, displayAlert, removeAlert, status, cameraStatus });
   } else if (location.protocol === 'file:') {
@@ -338,7 +503,15 @@
     status.append(link);
     document.querySelector('.layout').hidden = true;
   } else {
-    document.querySelector('#feed').src = '/video';
+    fetch('/api/session', { cache: 'no-store' }).then(response => {
+      webMode = response.ok;
+      sessionControls.hidden = !webMode;
+      if (!webMode) {
+        const feed = document.querySelector('#feed');
+        if (feed) feed.src = '/video';
+      }
+      refresh();
+    }).catch(refresh);
     const stream = new EventSource('/events');
     stream.onmessage = message => {
       const event = JSON.parse(message.data);

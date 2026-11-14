@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -85,7 +86,10 @@ def draw_calibration(frame: Frame, calibration: Calibration) -> Frame:
     return frame
 
 
-def run_calibration(config: WalkoutConfig, source: str, destination: Path) -> int:
+def run_calibration(
+    config: WalkoutConfig, source: str, destination: Path, *, mirror: bool = True,
+    save: Callable[[WalkoutConfig], None] | None = None,
+) -> int:
     window = "Walk-out calibration"
     capture = Capture(source, native_resolution=True)
     window_open = False
@@ -107,7 +111,7 @@ def run_calibration(config: WalkoutConfig, source: str, destination: Path) -> in
         window_open = True
         cv2.setMouseCallback(window, mouse)
         while True:
-            mirrored = cv2.flip(frame, 1)
+            mirrored = cv2.flip(frame, 1) if mirror else frame.copy()
             if display_width != width:
                 mirrored = cv2.resize(mirrored, (display_width, display_height), interpolation=cv2.INTER_AREA)
             cv2.imshow(window, draw_calibration(mirrored, calibration))
@@ -125,7 +129,10 @@ def run_calibration(config: WalkoutConfig, source: str, destination: Path) -> in
                     if calibration.points or key != ord("s"):
                         calibration.apply()
                     if key == ord("s"):
-                        save_config(destination, calibration.config)
+                        if save is None:
+                            save_config(destination, calibration.config)
+                        else:
+                            save(calibration.config)
                         LOG.info("Saved calibration to %s", destination.resolve())
                         return 0
                 except ValueError:

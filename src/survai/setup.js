@@ -1,0 +1,468 @@
+const $ = id => document.getElementById(id);
+const zoneNames = {
+  dining_zone: ['Dining', '#93d7ff'],
+  pay_zone: ['Payment', '#81f4c1'],
+  exit_band: ['Exit', '#ffcb91'],
+  exit_line: ['Exit', '#ffcb91'],
+};
+let setup;
+let session = { mode: 'idle', previews: {} };
+let cards = new Map();
+let zone = null;
+let landmark = {};
+let busy = false;
+let frozen = false;
+let hasFrames = false;
+let revision = 0;
+
+async function api(path, method = 'GET', data) {
+  const options = { method, cache: 'no-store' };
+  if (data !== undefined) {
+    options.headers = { 'Content-Type': 'application/json' };
+    options.body = JSON.stringify(data);
+  }
+  const response = await fetch(path, options);
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const detail = Array.isArray(body.detail) ? body.detail.map(error => error.msg).join(' ') : body.detail;
+    throw new Error(detail || `Request failed (${response.status}).`);
+  }
+  return response.status === 204 || response.status === 202 ? undefined : response.json();
+}
+
+function message(text = '', error = false) {
+  $('message').textContent = text;
+  $('message').dataset.error = error;
+}
+
+async function action(callback) {
+  if (busy) return;
+  busy = true;
+  message();
+  renderControls();
+  try {
+    await callback();
+  } catch (error) {
+    message(error.message, true);
+  } finally {
+    busy = false;
+    renderControls();
+  }
+}
+
+function node(tag, text) {
+  const element = document.createElement(tag);
+  if (text) element.textContent = text;
+  return element;
+}
+
+function field(text, type, value, onChange) {
+  const label = node('label', type === 'checkbox' ? null : text);
+  const input = node('input');
+  input.type = type;
+  if (type === 'checkbox') {
+    label.className = 'check';
+    input.checked = value;
+    label.append(input, document.createTextNode(text));
+  } else {
+    input.value = value;
+    label.append(input);
+  }
+  input.addEventListener('change', () => onChange(type === 'checkbox' ? input.checked : input.value.trim()));
+  return { label, input };
+}
+
+function cameraChanged(camera, changes) {
+  const original = structuredClone(camera);
+  Object.assign(camera, changes);
+  const sourceChanged = String(original.source) !== String(camera.source);
+  const mirrorOnly = !sourceChanged && original.mirror !== camera.mirror;
+  if (mirrorOnly) {
+    const zones = cameraZones(camera);
+    for (const key of Object.keys(zoneNames)) {
+      const points = zones[key];
+      camera.zones[key] = points ? points.map(([x, y]) => [1 - x, y]).reverse() : null;
+    }
+    delete camera.zones.dining;
+    delete camera.zones.pay;
+
+  }
+  if (sourceChanged || mirrorOnly) {
+    zone = null;
+    camera.floor_points = null;
+    clearCalibration();
+    message('Camera source or mirroring changed. Check zones and redraw shared landmarks.');
+  }
+  renderCameras();
+}
+
+function clearCalibration() {
+  setup.calibration = null;
+  landmark = {};
+}
+
+function cameraCard(camera) {
+  const card = node('article');
+  card.className = 'card';
+  const title = node('h3', camera.name || 'Camera');
+  const status = node('small');
+  const fields = node('div');
+  fields.className = 'fields';
+  const name = field('Camera name', 'text', camera.name, value => {
+    camera.name = value || camera.id;
+    title.textContent = camera.name;
+    updateZonePicker();
+  });
+  name.input.maxLength = 60;
+  const source = field('Camera index or video path', 'text', camera.source, value => {
+    cameraChanged(camera, { source: /^\d+$/.test(value) ? Number(value) : value });
+  });
+  fields.append(name.label, source.label);
+  const controls = node('div');
+  controls.className = 'toolbar';
+  const mirror = field('Mirror', 'checkbox', camera.mirror, value => cameraChanged(camera, { mirror: value }));
+  const rules = field('Walk-out rules', 'checkbox', camera.walkout_enabled, value => {
+    camera.walkout_enabled = value;
+    updateZonePicker();
+  });
+  const remove = node('button', 'Remove');
+  remove.type = 'button';
+  remove.addEventListener('click', () => {
+    zone = null;
+    setup.cameras = setup.cameras.filter(item => item.id !== camera.id);
+    clearCalibration();
+    renderCameras();
+  });
+  controls.append(mirror.label, rules.label, remove);
+  const surface = node('div');
+  surface.className = 'surface';
+  const image = node('img');
+  image.alt = `${camera.name} preview`;
+  image.hidden = true;
+  const empty = node('p', 'Connect previews to see this camera.');
+  const overlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  overlay.setAttribute('viewBox', '0 0 100 100');
+  overlay.setAttribute('preserveAspectRatio', 'none');
+  overlay.setAttribute('aria-hidden', 'true');
+  overlay.style.display = 'none';
+  overlay.addEventListener('click', event => addPoint(camera.id, event, overlay));
+  surface.append(image, empty, overlay);
+  card.append(title, status, fields, controls, surface);
+  return { card, status, image, overlay, empty, source: source.input, mirror: mirror.input,
+    name: name.input, rules: rules.input, remove, fetching: false, url: null };
+}
+
+function clearFrame(card) {
+  if (card.url) URL.revokeObjectURL(card.url);
+  card.url = null;
+  card.image.removeAttribute('src');
+  card.image.hidden = true;
+  card.empty.hidden = false;
+  card.overlay.style.display = 'none';
+}
+
+function renderCameras() {
+  revision++;
+  for (const card of cards.values()) clearFrame(card);
+  cards = new Map(setup.cameras.map(camera => [camera.id, cameraCard(camera)]));
+  $('cameras').replaceChildren(...[...cards.values()].map(card => card.card));
+  updateZonePicker();
+}
+
+function updateZonePicker() {
+  const picker = $('zone-camera');
+  const current = picker.value;
+  picker.replaceChildren(...setup.cameras.filter(camera => camera.walkout_enabled).map(camera => {
+    const option = node('option', camera.name);
+    option.value = camera.id;
+    return option;
+  }));
+  if ([...picker.options].some(option => option.value === current)) picker.value = current;
+  renderControls();
+}
+
+const zoneCamera = () => setup.cameras.find(camera => camera.id === $('zone-camera').value);
+const tool = () => $('tool').value;
+const landmarks = () => setup.calibration?.landmarks || [];
+
+function cameraZones(camera) {
+  const zones = { ...setup.walkout, ...camera.zones };
+  if (camera.zones.exit_band && !('exit_line' in camera.zones)) zones.exit_line = null;
+  if (camera.zones.exit_line && !('exit_band' in camera.zones)) zones.exit_band = null;
+  return zones;
+}
+
+function validateDraft() {
+  if (zone !== null) throw new Error('Apply the zone you’re drawing, or undo its points before saving.');
+  if (Object.keys(landmark).length) throw new Error('Finish clicking the current landmark in every camera, or undo it.');
+}
+
+function addPoint(id, event, overlay) {
+  const card = cards.get(id);
+  if (busy || session.mode !== 'preview' || !card.image.complete || !card.url ||
+      session.previews[id] !== 'Ready') return;
+  const rect = overlay.getBoundingClientRect();
+  const point = [Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+    Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height))].map(value => Number(value.toFixed(6)));
+  if (tool() === 'landmark') {
+    const next = setup.cameras.find(camera => !landmark[camera.id]);
+    if (!next || next.id !== id) return;
+    landmark[id] = point;
+    if (Object.keys(landmark).length === setup.cameras.length) {
+      setup.calibration ??= { reference: setup.cameras[0].id, landmarks: [] };
+      setup.calibration.landmarks.push({ name: `landmark_${landmarks().length + 1}`, ...landmark });
+      landmark = {};
+    }
+  } else {
+    if (zoneCamera()?.id !== id) return;
+    zone ??= [];
+    if (tool() === 'exit_line' && zone.length >= 2) return;
+    zone.push(point);
+  }
+  renderControls();
+}
+
+function svg(parent, kind, properties, content) {
+  const shape = document.createElementNS('http://www.w3.org/2000/svg', kind);
+  for (const [key, value] of Object.entries(properties)) shape.setAttribute(key, value);
+  if (content) shape.textContent = content;
+  parent.append(shape);
+}
+
+const isNormalized = point => Array.isArray(point) && point.every(value => value >= 0 && value <= 1);
+
+function renderOverlays() {
+  for (const camera of setup.cameras) {
+    const { overlay, url } = cards.get(camera.id);
+    overlay.style.display = url ? '' : 'none';
+    overlay.replaceChildren();
+    const landmarkMode = tool() === 'landmark';
+    const next = setup.cameras.find(item => !landmark[item.id]);
+    overlay.classList.toggle('draw', Boolean(url && (landmarkMode ? next.id === camera.id : zoneCamera()?.id === camera.id)));
+    if (camera.walkout_enabled) {
+      const zones = cameraZones(camera);
+      for (const [key, [name, color]] of Object.entries(zoneNames)) {
+        const editing = !landmarkMode && tool() === key && zone !== null && zoneCamera()?.id === camera.id;
+        const points = editing ? zone : zones[key];
+        if (!points?.length) continue;
+        const kind = key === 'exit_line' || points.length < 3 ? 'polyline' : 'polygon';
+        svg(overlay, kind, {
+          points: points.map(([x, y]) => `${x * 100},${y * 100}`).join(' '),
+          fill: kind === 'polygon' ? `${color}24` : 'none', stroke: color, 'stroke-width': 2,
+        });
+        if (editing) {
+          for (const [x, y] of points) svg(overlay, 'circle', { cx: x * 100, cy: y * 100, r: .65, fill: color });
+        }
+        svg(overlay, 'text', { x: points[0][0] * 100 + 1, y: Math.max(5, points[0][1] * 100 - 1),
+          fill: color, 'font-size': 3.5 }, key === 'exit_line' ? `${name} A → B` : name);
+        if (key === 'exit_line' && points.length === 2) {
+          svg(overlay, 'text', { x: points[1][0] * 100 + 1, y: Math.max(5, points[1][1] * 100 - 1),
+            fill: color, 'font-size': 3.5 }, 'B');
+        }
+      }
+    }
+    if (landmarkMode) {
+      [...landmarks(), landmark].forEach((item, index) => {
+        const point = item[camera.id];
+        if (!isNormalized(point)) return;
+        const [x, y] = point;
+        svg(overlay, 'circle', { cx: x * 100, cy: y * 100, r: .85, fill: '#d1fa88', stroke: '#0b111b',
+          'stroke-width': .25 });
+        svg(overlay, 'text', { x: x * 100 + 1.1, y: Math.max(5, y * 100 - 1), fill: '#d1fa88',
+          'font-size': 3.5 }, String(index + 1));
+      });
+    }
+  }
+}
+
+function renderControls() {
+  if (!setup) return;
+  const idle = session.mode === 'idle';
+  const preview = session.mode === 'preview';
+  const editable = !busy && (idle || preview);
+  const landmarkMode = tool() === 'landmark';
+  const zoneTarget = zoneCamera();
+  const framesReady = preview && Object.values(session.previews).some(status => status === 'Ready') && hasFrames;
+  $('preview').disabled = $('scan').disabled = busy || !idle;
+  const indexes = session.camera_indexes;
+  $('scan-result').hidden = session.mode !== 'scanning' && !indexes;
+  $('scan-result').textContent = session.mode === 'scanning' ? 'Checking camera indexes 0–5…' :
+    indexes?.length ? `Available indexes: ${indexes.join(', ')}. Connect previews to identify each feed.` :
+      'No cameras returned frames. Check Camera permissions and the iPhone connection.';
+  $('stop').disabled = busy || idle || session.mode === 'stopping';
+  $('add-camera').disabled = busy || !idle || setup.cameras.length >= 4;
+  $('freeze').disabled = busy || !framesReady;
+  $('freeze').textContent = frozen ? 'Resume previews' : 'Freeze previews';
+  for (const card of cards.values()) {
+    card.source.disabled = card.mirror.disabled = busy || !idle;
+    card.remove.disabled = busy || !idle || setup.cameras.length <= 2;
+    card.name.disabled = !editable;
+    card.rules.disabled = !editable || zone !== null;
+  }
+  $('zone-camera-field').hidden = $('redraw').hidden = $('apply').hidden = landmarkMode;
+  $('plane-field').hidden = $('clear-landmarks').hidden = !landmarkMode;
+  $('tool').disabled = !editable || zone !== null || Object.keys(landmark).length > 0;
+  $('zone-camera').disabled = !editable || zone !== null || !zoneTarget;
+  $('redraw').disabled = !editable || !zoneTarget || session.previews[zoneTarget.id] !== 'Ready';
+  $('undo').disabled = !editable || !(landmarkMode ? landmarks().length || Object.keys(landmark).length : zone !== null);
+  $('apply').disabled = !editable || (zone?.length || 0) < (tool() === 'exit_line' ? 2 : 3);
+  $('clear-landmarks').disabled = !editable || (!setup.calibration && !Object.keys(landmark).length);
+  for (const id of ['dining-time', 'pay-time', 'exit-time', 'plane', 'record', 'floor-grid', 'save', 'start']) {
+    $(id).disabled = !editable;
+  }
+  const modes = { idle: 'Cameras stopped', preview: 'Setup previews running', monitoring: 'Monitoring is active',
+    stopping: 'Releasing cameras…', scanning: 'Checking available cameras…' };
+  $('mode').textContent = modes[session.mode];
+  if (landmarkMode) {
+    const next = setup.cameras.find(camera => !landmark[camera.id]);
+    const plane = $('plane').value === 'floor' ? 'the floor' : 'a fixed plane at head height';
+    $('geometry-help').textContent = `${landmarks().length} complete. Click point ${landmarks().length + 1} in ${next.name}, then match the same fixed point in the other feeds. Use at least four widely spaced points on ${plane}.`;
+  } else {
+    $('geometry-help').textContent = zoneTarget ?
+      (tool() === 'exit_line' ? 'Click the top endpoint first for an exit on the right. For an exit on the left, click the bottom endpoint first.' :
+        'Click three or more corners in order, then apply the zone.') :
+      'Enable walk-out rules on a camera to draw its zones.';
+  }
+  renderOverlays();
+}
+
+async function refresh() {
+  const latest = await api('/api/session');
+  if (latest.error && latest.error !== session.error) message(latest.error, true);
+  if (latest.mode !== 'preview' && (frozen || hasFrames)) {
+    revision++;
+    frozen = hasFrames = false;
+    for (const card of cards.values()) clearFrame(card);
+  }
+  const redraw = session.mode !== latest.mode ||
+    JSON.stringify(session.previews) !== JSON.stringify(latest.previews) ||
+    String(session.camera_indexes) !== String(latest.camera_indexes);
+  session = latest;
+  for (const [id, card] of cards) {
+    card.status.textContent = session.previews[id] || (session.mode === 'preview' ? 'Connecting…' : '');
+  }
+  if (redraw) renderControls();
+}
+
+async function frames() {
+  if (session.mode !== 'preview' || frozen) return;
+  const current = revision;
+  await Promise.all([...cards].map(async ([id, card]) => {
+    if (card.fetching || !['Ready', 'Adjusting exposure and focus'].includes(session.previews[id])) return;
+    card.fetching = true;
+    try {
+      const response = await fetch(`/api/session/preview/${encodeURIComponent(id)}`, { cache: 'no-store' });
+      if (!response.ok) return;
+      const blob = await response.blob();
+      if (current !== revision || frozen || session.mode !== 'preview') return;
+      const previous = card.url;
+      card.url = URL.createObjectURL(blob);
+      card.image.src = card.url;
+      card.image.hidden = false;
+      card.empty.hidden = true;
+      card.overlay.style.display = '';
+      if (previous) URL.revokeObjectURL(previous);
+      if (!hasFrames) {
+        hasFrames = true;
+        renderControls();
+      }
+    } finally {
+      card.fetching = false;
+    }
+  }));
+}
+
+async function save() {
+  validateDraft();
+  for (const [id, property] of [
+    ['dining-time', 'min_dwell_seconds'], ['pay-time', 'pay_dwell_seconds'], ['exit-time', 'lost_grace_seconds'],
+  ]) {
+    if (!$(id).value || !$(id).checkValidity()) throw new Error('Enter positive dwell and grace times.');
+    setup.walkout[property] = Number($(id).value);
+  }
+  setup.plane = $('plane').value;
+  await api('/api/setup', 'PUT', setup);
+}
+
+$('tool').onchange = $('zone-camera').onchange = renderControls;
+$('plane').onchange = renderControls;
+$('redraw').onclick = () => { zone = []; renderControls(); };
+$('undo').onclick = () => {
+  if (tool() === 'landmark') {
+    const key = Object.keys(landmark).at(-1);
+    if (key) delete landmark[key];
+    else landmarks().pop();
+    if (!landmarks().length) setup.calibration = null;
+  } else {
+    zone?.pop();
+    if (!zone?.length) zone = null;
+  }
+  renderControls();
+};
+$('apply').onclick = () => action(async () => {
+  const camera = zoneCamera();
+  const key = tool();
+  if (key === 'exit_line') camera.zones.exit_band = null;
+  if (key === 'exit_band') camera.zones.exit_line = null;
+  camera.zones[key] = zone;
+  zone = null;
+  message('Zone applied. Save setup to keep your changes.');
+});
+$('clear-landmarks').onclick = () => { clearCalibration(); renderControls(); };
+$('freeze').onclick = () => { frozen = !frozen; revision++; renderControls(); };
+$('add-camera').onclick = () => {
+  let index = 0;
+  while (setup.cameras.some(camera => String(camera.source) === String(index))) index++;
+  setup.cameras.push({
+    id: `camera-${crypto.randomUUID().slice(0, 8)}`, source: index, name: `Camera ${index}`,
+    mirror: true, walkout_enabled: false, zones: {},
+  });
+  clearCalibration();
+  renderCameras();
+};
+$('scan').onclick = () => action(async () => {
+  await api('/api/session/scan', 'POST');
+  await refresh();
+});
+$('preview').onclick = () => action(async () => {
+  await api('/api/session/preview', 'POST', { cameras: setup.cameras });
+  await refresh();
+});
+$('stop').onclick = () => action(async () => {
+  await api('/api/session/stop', 'POST');
+  await refresh();
+});
+$('save').onclick = () => action(async () => {
+  await save();
+  message('Setup saved.');
+});
+$('start').onclick = () => action(async () => {
+  await save();
+  if (session.mode === 'preview') {
+    await api('/api/session/stop', 'POST');
+    for (let i = 0; i < 60; i++) {
+      await refresh();
+      if (session.mode === 'idle') break;
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+  }
+  await api('/api/session/start', 'POST', { record: $('record').checked, floor_grid: $('floor-grid').checked });
+  location.assign('/');
+});
+
+(async () => {
+  try {
+    setup = await api('/api/setup');
+    $('plane').value = setup.plane;
+    $('dining-time').value = setup.walkout.min_dwell_seconds;
+    $('pay-time').value = setup.walkout.pay_dwell_seconds;
+    $('exit-time').value = setup.walkout.lost_grace_seconds;
+    renderCameras();
+    await refresh();
+    setInterval(() => refresh().catch(error => message(error.message, true)), 600);
+    setInterval(() => frames().catch(error => message(error.message, true)), 220);
+  } catch (error) {
+    message(error.message, true);
+    document.querySelectorAll('button, input, select').forEach(control => { control.disabled = true; });
+  }
+})();
