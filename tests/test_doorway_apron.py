@@ -37,3 +37,31 @@ def test_apron_match_requires_torso_coverage_and_consistent_observations():
     assert labels.employees == {employee.id}
     labels.update({}, 6)
     assert not labels.employees
+
+
+def test_rgb_phone_marker_and_track_label():
+    import cv2
+
+    from survai.employee_marker import PhoneMarker
+
+    image = np.zeros((240, 240, 3), np.uint8)
+    for index, color in enumerate(((0, 0, 245), (0, 240, 0), (230, 0, 0))):
+        image[75 + index * 16:89 + index * 16, 42:70] = color
+    # Another person has the same colors, arranged horizontally.
+    for index, color in enumerate(((0, 0, 245), (0, 240, 0), (230, 0, 0))):
+        image[80:95, 146 + index * 20:163 + index * 20] = color
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    employee = Track(1, "person", (0, 0, 0.5, 1))
+    customer = Track(2, "person", (0.5, 0, 1, 1))
+    marker = PhoneMarker()
+    assert marker.matches(hsv, employee)
+    assert not marker.matches(hsv, customer)
+    labels = EmployeeLabels(sticky=True)
+    for tick in (0, 0.1, 0.2):
+        labels.update({1: True, 2: False}, tick)
+    assert labels.employees == {1}
+    for tick in (1, 2, 3, 4, 5, 6):
+        labels.update({1: False, 2: False}, tick)
+    assert labels.employees == {1}
+    labels.update({2: False}, 12)
+    assert not labels.employees

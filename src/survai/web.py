@@ -69,6 +69,7 @@ class WebSession:
         self.preview_specs: dict[str, CameraConfig] = {}
         self.camera_indexes: list[int] | None = None
         self.state.status = "Monitoring stopped"
+        self.state.walkout_enabled = any(camera.walkout_enabled for camera in config.active_cameras)
 
     def settings(self) -> dict[str, object]:
         with self.lock:
@@ -112,7 +113,7 @@ class WebSession:
                     "walkout": walkout, "fusion": current.fusion.model_dump() | {"plane": settings.plane},
                 }
             )
-            self.sources(updated.cameras)
+            self.sources(updated.active_cameras)
             old_geometry = {item.id: (str(item.source), item.mirror) for item in current.cameras}
             new_geometry = {item.id: (str(item.source), item.mirror) for item in updated.cameras}
             if updated.calibration is not None and updated.calibration == current.calibration and old_geometry != new_geometry:
@@ -136,6 +137,8 @@ class WebSession:
             if updated != current or not self.path.exists():
                 save_config(self.path, updated)
                 self.config = updated
+            with self.state.lock:
+                self.state.walkout_enabled = any(camera.walkout_enabled for camera in updated.active_cameras)
 
     def sources(self, cameras: list[CameraConfig]) -> list[CameraConfig]:
         resolved = []
@@ -173,7 +176,7 @@ class WebSession:
         self.launch("scanning", probe)
 
     def preview(self, choices: Cameras) -> None:
-        cameras = MultiCameraConfig(cameras=choices.cameras).cameras
+        cameras = MultiCameraConfig(cameras=choices.cameras).active_cameras
         self.sources(cameras)
         self.launch("preview", lambda: self.run_preview(cameras))
 
@@ -186,7 +189,10 @@ class WebSession:
                     feed = CalibrationFeed(open_calibration_capture(camera, self.path), camera.mirror)
                 except (ValueError, OSError, RuntimeError, cv2.error) as exc:
                     with self.lock:
-                        self.preview_status[camera.id] = str(exc)
+                        hint = " Stop cameras, then use Find cameras to check the current index." if (
+                            str(camera.source).isdecimal()
+                        ) else ""
+                        self.preview_status[camera.id] = f"{exc}{hint}"
                     continue
                 resources.callback(feed.close, wait=True)
                 with self.lock:
@@ -213,7 +219,9 @@ class WebSession:
     def start(self, options: StartOptions) -> None:
         with self.lock:
             config = self.config.model_copy(deep=True)
-            config.cameras = self.sources(config.cameras)
+            if len(config.active_cameras) != len(config.cameras):
+                config.calibration = None
+            config.cameras = self.sources(config.active_cameras)
             defaults = config.walkout or self.defaults
         if options.record and not str(config.cameras[0].source).isdecimal():
             raise ValueError("Recording requires live camera inputs.")
@@ -316,6 +324,10 @@ def install_web_routes(app: FastAPI, session: WebSession) -> None:
     @app.get("/setup")
     def setup() -> FileResponse:
         return FileResponse(Path(__file__).with_name("setup.html"), headers={"Cache-Control": "no-store"})
+
+    @app.get("/employee-marker.png")
+    def employee_marker() -> FileResponse:
+        return FileResponse(Path(__file__).with_name("employee-marker.png"), media_type="image/png")
 
     @app.get("/setup.js")
     def setup_script() -> FileResponse:

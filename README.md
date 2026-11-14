@@ -2,6 +2,16 @@
 
 The MacBook webcam demo uses anonymous person tracks to flag a possible walk-out. The preview mirrors the camera. All zone coordinates refer to that mirrored view. Payment is simulated with the pay zone or the `p` key. A future Toast, Square, or Clover integration can supply a payment confirmation once a POS check has been associated with a visit.
 
+## MacBook-only doorway demo
+
+Double-click **Open Surveillance.command**, open **Camera setup**, and connect previews. The saved setup pauses the iPhone and enables the RGB employee marker on the MacBook.
+
+- Select **Door counting line**. Click each end of the line where a person's tracking dot will cross, then click on the inside side and apply the line.
+- Download the **RGB employee marker** from Camera setup and send it to the phone. Show it full-screen in portrait, with red on top, green in the middle, and blue at the bottom. Hold it toward the MacBook at chest height for a moment.
+- Click **Save and start monitoring**. **Came in** and **Left** count all doorway crossings. The guest count shows customers currently visible, and each track displays **Employee** or **Customer**.
+
+Stop the cameras before re-enabling the iPhone in Camera setup.
+
 ## Run the two-camera demo in a browser
 
 Double-click **Open Surveillance.command** in Finder. It opens the local dashboard in your browser. Keep the launcher window open while the dashboard is in use. If an older camera session is running, stop it first so it releases the devices.

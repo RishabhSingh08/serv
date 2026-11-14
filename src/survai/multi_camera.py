@@ -17,6 +17,7 @@ from .config import CameraConfig, MultiCameraConfig, WalkoutConfig
 from .detectors.walkout import ExitType, VisitState, WalkoutDetector
 from .doorway import DoorCounter
 from .events import Event
+from .employee_marker import PhoneMarker
 from .evidence import Evidence, snapshot_candidates
 from .floor_calibration import calibrate_geometry, draw_floor_grid, project
 from .fusion import Detection, FloorTracker, fuse, synchronized_frames
@@ -130,6 +131,8 @@ def camera_grid(cameras: dict[str, Camera]) -> Frame:
             tile[30:30 + h, (480 - w) // 2:(480 - w) // 2 + w] = fitted
         cv2.putText(tile, camera.spec.name, (10, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (224, 240, 249), 1)
         tiles.append(tile)
+    if len(tiles) == 1:
+        return tiles[0]
     if len(tiles) == 2:
         return np.hstack(tiles)
     if len(tiles) == 3:
@@ -153,7 +156,7 @@ def run_multi(
             LOG.info("Dashboard at http://127.0.0.1:%d", dashboard.port)
         cameras = {}
         now = 0.0
-        for spec in config.cameras:
+        for spec in config.active_cameras:
             if stop.is_set():
                 return 0
             layout = spec.layout(defaults) if spec.walkout_enabled else defaults
@@ -180,10 +183,12 @@ def run_multi(
             cameras[spec.id] = camera
         walkout_cameras = {key for key, cam in cameras.items() if cam.spec.walkout_enabled}
         state.publish_cameras({key: CameraFeed(cam.spec.name, "Starting") for key, cam in cameras.items()})
+        with state.lock:
+            state.walkout_enabled = bool(walkout_cameras)
         live = next(iter(cameras.values())).capture.live
         if any(cam.capture.live != live for cam in cameras.values()):
             raise ValueError("Use all live cameras or all recordings")
-        calibrated = config.calibration is not None
+        calibrated = config.calibration is not None and len(cameras) > 1 and len(cameras) == len(config.cameras)
         coverage: dict[str, object] = {}
         if calibrated:
             matrices = calibrate_geometry(config, {
@@ -200,7 +205,9 @@ def run_multi(
         if door is not None:
             state.publish_door_counts(0, 0)
         aprons = {key: ApronColor(cam.spec.apron_color) for key, cam in cameras.items() if cam.spec.apron_color}
+        markers = {key: PhoneMarker() for key, cam in cameras.items() if cam.spec.employee_marker}
         employees = EmployeeLabels()
+        marker_employees = EmployeeLabels(sticky=True)
         floor_tracker = FloorTracker(config.fusion) if calibrated else None
         writers = {}
         if record is not None:
@@ -305,6 +312,9 @@ def run_multi(
                     assert cam.image is not None
                     local = cam.local.update(updated[key], detected, now)
                     cam.frame_count += 1
+                    if len(cameras) == 1:
+                        cam.tracks = local
+                        continue
                     descriptors = {}
                     if (cam.frame_count - 1) % config.identity.sample_every == 0:
                         for track in local:
@@ -349,6 +359,16 @@ def run_multi(
                         if match is not None:
                             observations[track.id] = observations.get(track.id, False) or match
                 employees.update(observations, now)
+                marker_results = {}
+                for key in markers.keys() & updated.keys():
+                    image = cameras[key].image
+                    assert image is not None
+                    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+                    for track in cameras[key].tracks:
+                        matched = markers[key].matches(hsv, track)
+                        marker_results[track.id] = marker_results.get(track.id, False) or matched
+                marker_employees.update(marker_results, now)
+                employee_ids = employees.employees | marker_employees.employees
 
                 fresh = {key: cam for key, cam in cameras.items() if cam.processed_at is not None
                          and now - cam.processed_at <= stalled_after}
@@ -357,6 +377,9 @@ def run_multi(
                 for key, cam in fresh.items():
                     for track in cam.tracks:
                         visible_cameras.setdefault(track.id, set()).add(key)
+                    if not walkout_cameras:
+                        for track in cam.tracks:
+                            sightings.setdefault(track.id, []).append(Sighting(key, track.point))
                     if key not in walkout_cameras:
                         continue
                     for guest, sighting in cam.sightings():
@@ -396,7 +419,7 @@ def run_multi(
                 visible = [track for cam in fresh.values() for track in cam.tracks]
                 profiles.update(visible, visits.visits, timestamp)
                 for key, profile in profiles.active.items():
-                    profile.employee = key in employees.employees
+                    profile.employee = key in employee_ids
                     profile.cameras = tuple(camera for camera in fresh if camera in visible_cameras.get(key, set()))
                     profile.dwell_seconds = visits.visits[key].dining_seconds
                     confidences = [cam.confidence[key] for cam in fresh.values() if key in cam.confidence]
@@ -415,7 +438,7 @@ def run_multi(
                             }
                             cam.overlay = annotate_walkout(updated[key].copy(), cam.tracks, cam.hud, fps,
                                                            now < flash_until, displayed_at=timestamp, global_labels=True,
-                                                           door_line=cam.spec.door_line, employees=employees.employees)
+                                                           door_line=cam.spec.door_line, employees=employee_ids)
                             if floor_grid and calibrated and cam.floor_matrix is not None:
                                 draw_floor_grid(cam.overlay, cam.floor_matrix)
                             if cam.evidence.wants_frame(now):
@@ -425,7 +448,8 @@ def run_multi(
                             cam.overlay = annotate_walkout(
                                 updated[key].copy(), cam.tracks, None, fps, False,
                                 displayed_at=timestamp, global_labels=True,
-                                door_line=cam.spec.door_line, employees=employees.employees,
+                                door_line=cam.spec.door_line, employees=employee_ids,
+                                customer_labels=not walkout_cameras, door_anchor=cam.layout.anchor,
                             )
                         ok, jpeg = cv2.imencode(".jpg", cam.overlay)
                         cam.jpeg = jpeg.tobytes() if ok else None

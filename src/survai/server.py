@@ -77,6 +77,8 @@ def create_app(state: State, directory: Path, summary_model: str | None) -> Fast
                 "alert_active": state.alert_active,
                 "total_alerts": state.counts.total(),
                 "door_counts": state.door_counts,
+                "walkout_enabled": state.walkout_enabled,
+                "customers_in_view": sum(profile.visible and not profile.employee for profile in state.profiles.values()),
             }
 
     @app.get("/api/alerts")

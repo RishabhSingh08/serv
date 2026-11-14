@@ -15,6 +15,7 @@ def annotate_walkout(
     frame: Frame, tracks: list[Track], detector: WalkoutDetector | None, fps: float, flash: bool,
     *, displayed_at: datetime | None = None, global_labels: bool = False,
     door_line: tuple[Point, Point] | None = None, employees: Set[int] = frozenset(),
+    customer_labels: bool = False, door_anchor: str = "center",
 ) -> Frame:
     height, width = frame.shape[:2]
     scale = max(0.55, width / 960)
@@ -87,8 +88,12 @@ def annotate_walkout(
                 ], np.int32)
                 cv2.polylines(frame, [bracket], False, background, thickness + 3, cv2.LINE_AA)
                 cv2.polylines(frame, [bracket], False, color, thickness + 1, cv2.LINE_AA)
-        prefix = "Employee " if track.id in employees else ("Guest " if global_labels else "#")
+        label_prefix = "Customer " if customer_labels else ("Guest " if global_labels else "#")
+        prefix = "Employee " if track.id in employees else label_prefix
         if visit is None or config is None:
+            if door_line is not None:
+                point = track.point if door_anchor == "bottom_center" else ((left + right) / 2, (top + bottom) / 2)
+                cv2.circle(frame, pixel(point), max(2, round(4 * scale)), color, -1, cv2.LINE_AA)
             label(f"{prefix}{track.id}", (x, y - 6), color)
             continue
         anchor = pixel(visit.point)

@@ -72,6 +72,10 @@
     <p class="help">Enter the camera index, usually 0 for the MacBook and 1 for the iPhone. Connect previews to check the order and mirroring. You can also enter local video paths for a replay.</p>
     <p class="help" id="scan-result" role="status" hidden></p>
     <div class="grid" id="cameras"></div>
+    <p class="help" id="marker-help" hidden>
+      Download the <a href="/employee-marker.png" download>RGB employee marker</a> and send it to the phone.
+      Open it full-screen in portrait and hold it at chest height, facing the camera.
+    </p>
   </section>
   <section aria-labelledby="geometry-title">
     <h2 id="geometry-title">Zones and shared floor</h2>
@@ -101,10 +105,10 @@
   <section aria-labelledby="monitor-title">
     <h2 id="monitor-title">Monitoring</h2>
     <div class="options">
-      <label>Dining dwell (s)<input id="dining-time" type="number" min="0.1" step="0.1"></label>
-      <label>Payment dwell (s)<input id="pay-time" type="number" min="0.1" step="0.1"></label>
-      <label>Exit grace (s)<input id="exit-time" type="number" min="0.1" step="0.1"></label>
-      <label class="check"><input id="floor-grid" type="checkbox">Show floor grid</label>
+      <label data-walkout>Dining dwell (s)<input id="dining-time" type="number" min="0.1" step="0.1"></label>
+      <label data-walkout>Payment dwell (s)<input id="pay-time" type="number" min="0.1" step="0.1"></label>
+      <label data-walkout>Exit grace (s)<input id="exit-time" type="number" min="0.1" step="0.1"></label>
+      <label id="floor-grid-field" class="check"><input id="floor-grid" type="checkbox">Show floor grid</label>
       <label class="check"><input id="record" type="checkbox">Record camera feeds</label>
     </div>
     <div class="options">

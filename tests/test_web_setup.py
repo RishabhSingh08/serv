@@ -83,3 +83,48 @@ def test_browser_previews_and_starts_with_saved_camera_layout(tmp_path: Path) ->
                 wait_for("Monitoring stopped")
         finally:
             session.close()
+
+
+def test_paused_camera_is_retained_but_never_opened(tmp_path: Path) -> None:
+    config = MultiCameraConfig(cameras=[
+        {"id": "mac", "name": "MacBook", "source": 0, "walkout_enabled": False, "employee_marker": True},
+        {"id": "phone", "name": "iPhone", "source": 1, "enabled": False},
+    ])
+    state = State()
+    session = WebSession(tmp_path / "setup.yaml", config, load_walkout_config(DEMO_CONFIG),
+                         state, tmp_path, None, False)
+    app = create_app(state, tmp_path, None)
+    install_web_routes(app, session)
+
+    def preview(cameras):
+        assert [camera.id for camera in cameras] == ["mac"]
+        assert session.stop.wait(timeout=3)
+
+    def monitor(runtime_config, defaults, **runtime):
+        assert [camera.id for camera in runtime_config.cameras] == ["mac"]
+        assert runtime_config.cameras[0].employee_marker
+        state.publish(b"test", [], 0, 0, 0)
+        assert runtime["stop"].wait(timeout=3)
+
+    def wait_for(client, predicate):
+        deadline = monotonic() + 3
+        while not predicate():
+            assert monotonic() < deadline
+            sleep(0.01)
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        setup = client.get("/api/setup").json()
+        assert setup["cameras"][1]["enabled"] is False
+        assert client.get("/employee-marker.png").content.startswith(b"\x89PNG")
+        try:
+            with patch.object(session, "run_preview", side_effect=preview) as preview_call:
+                assert client.post("/api/session/preview", json={"cameras": setup["cameras"]}).status_code == 202
+                wait_for(client, lambda: preview_call.called)
+                assert client.post("/api/session/stop").status_code == 202
+                wait_for(client, lambda: client.get("/api/session").json()["mode"] == "idle")
+            with patch("survai.multi_camera.run_multi", side_effect=monitor):
+                assert client.post("/api/session/start", json={}).status_code == 202
+                wait_for(client, lambda: client.get("/api/status").json()["status"] == "Monitoring")
+                assert client.get("/api/status").json()["walkout_enabled"] is False
+        finally:
+            session.close()

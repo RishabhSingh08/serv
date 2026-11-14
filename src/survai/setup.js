@@ -111,7 +111,7 @@ function cameraCard(camera) {
   const card = node('article');
   card.className = 'card';
   const title = node('h3', camera.name || 'Camera');
-  const status = node('small');
+  const status = node('small', camera.enabled === false ? 'Paused' : '');
   const fields = node('div');
   fields.className = 'fields';
   const name = field('Camera name', 'text', camera.name, value => {
@@ -139,13 +139,23 @@ function cameraCard(camera) {
     clearCalibration();
     renderCameras();
   });
-  controls.append(mirror.label, rules.label, remove);
+  const enabled = field('Camera enabled', 'checkbox', camera.enabled !== false, value => {
+    camera.enabled = value;
+    zone = null;
+    landmark = {};
+    renderCameras();
+  });
+  const marker = field('RGB employee marker', 'checkbox', Boolean(camera.employee_marker), value => {
+    camera.employee_marker = value;
+    renderControls();
+  });
+  controls.append(enabled.label, mirror.label, rules.label, marker.label, remove);
   const surface = node('div');
   surface.className = 'surface';
   const image = node('img');
   image.alt = `${camera.name} preview`;
   image.hidden = true;
-  const empty = node('p', 'Connect previews to see this camera.');
+  const empty = node('p', camera.enabled === false ? 'Enable this camera to connect it.' : 'Connect previews to see this camera.');
   const overlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   overlay.setAttribute('viewBox', '0 0 100 100');
   overlay.setAttribute('preserveAspectRatio', 'none');
@@ -155,7 +165,7 @@ function cameraCard(camera) {
   surface.append(image, empty, overlay);
   card.append(title, status, fields, controls, surface);
   return { card, status, image, overlay, empty, source: source.input, mirror: mirror.input,
-    name: name.input, rules: rules.input, remove, fetching: false, url: null };
+    name: name.input, rules: rules.input, enabled: enabled.input, marker: marker.input, remove, fetching: false, url: null };
 }
 
 function clearFrame(card) {
@@ -176,9 +186,17 @@ function renderCameras() {
 }
 
 function updateZonePicker() {
+  const active = activeCameras();
+  const walkout = active.some(camera => camera.walkout_enabled);
+  for (const option of $('tool').options) {
+    option.hidden = option.value === 'landmark' ? active.length < 2 || active.length < setup.cameras.length :
+      option.value !== 'door_line' && !walkout;
+    option.disabled = option.hidden;
+  }
+  if ($('tool').selectedOptions[0]?.disabled) $('tool').value = 'door_line';
   const picker = $('zone-camera');
   const current = picker.value;
-  picker.replaceChildren(...setup.cameras.filter(camera => camera.walkout_enabled).map(camera => {
+  picker.replaceChildren(...active.filter(camera => tool() === 'door_line' || camera.walkout_enabled).map(camera => {
     const option = node('option', camera.name);
     option.value = camera.id;
     return option;
@@ -187,6 +205,7 @@ function updateZonePicker() {
   renderControls();
 }
 
+const activeCameras = () => setup.cameras.filter(camera => camera.enabled !== false);
 const zoneCamera = () => setup.cameras.find(camera => camera.id === $('zone-camera').value);
 const tool = () => $('tool').value;
 const landmarks = () => setup.calibration?.landmarks || [];
@@ -328,8 +347,14 @@ function renderControls() {
   const editable = !busy && (idle || preview);
   const landmarkMode = tool() === 'landmark';
   const zoneTarget = zoneCamera();
+  const active = activeCameras();
+  const walkoutEnabled = active.some(camera => camera.walkout_enabled);
+  document.querySelectorAll('[data-walkout]').forEach(field => { field.hidden = !walkoutEnabled; });
+  $('marker-help').hidden = !active.some(camera => camera.employee_marker);
+  $('floor-grid-field').hidden = active.length < 2;
   const framesReady = preview && Object.values(session.previews).some(status => status === 'Ready') && hasFrames;
   $('preview').disabled = $('scan').disabled = busy || !idle;
+  $('preview').disabled ||= active.length === 0;
   const indexes = session.camera_indexes;
   $('scan-result').hidden = session.mode !== 'scanning' && !indexes;
   $('scan-result').textContent = session.mode === 'scanning' ? 'Checking camera indexes 0–5…' :
@@ -339,9 +364,12 @@ function renderControls() {
   $('add-camera').disabled = busy || !idle || setup.cameras.length >= 4;
   $('freeze').disabled = busy || !framesReady;
   $('freeze').textContent = frozen ? 'Resume previews' : 'Freeze previews';
-  for (const card of cards.values()) {
+  for (const [id, card] of cards) {
+    const camera = setup.cameras.find(item => item.id === id);
+    card.enabled.disabled = busy || !idle || (camera.enabled !== false && active.length === 1);
+    card.marker.disabled = !editable || camera.enabled === false;
     card.source.disabled = card.mirror.disabled = busy || !idle;
-    card.remove.disabled = busy || !idle || setup.cameras.length <= 2;
+    card.remove.disabled = busy || !idle || setup.cameras.length <= 1 || (camera.enabled !== false && active.length === 1);
     card.name.disabled = !editable;
     card.rules.disabled = !editable || zone !== null;
   }
@@ -407,7 +435,8 @@ async function refresh() {
     String(session.camera_indexes) !== String(latest.camera_indexes);
   session = latest;
   for (const [id, card] of cards) {
-    card.status.textContent = session.previews[id] || (session.mode === 'preview' ? 'Connecting…' : '');
+    const camera = setup.cameras.find(item => item.id === id);
+    card.status.textContent = camera.enabled === false ? 'Paused' : session.previews[id] || (session.mode === 'preview' ? 'Connecting…' : '');
   }
   if (redraw) renderControls();
 }
@@ -452,7 +481,8 @@ async function save() {
   await api('/api/setup', 'PUT', setup);
 }
 
-$('tool').onchange = $('zone-camera').onchange = renderControls;
+$('tool').onchange = updateZonePicker;
+$('zone-camera').onchange = renderControls;
 $('plane').onchange = renderControls;
 $('redraw').onclick = () => { zone = []; renderControls(); };
 $('undo').onclick = () => {

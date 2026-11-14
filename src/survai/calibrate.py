@@ -12,12 +12,14 @@ from .config import WalkoutConfig, save_config
 from .zones import Point
 
 LOG = logging.getLogger(__name__)
-Zone = Literal["dining_zone", "pay_zone", "exit_band", "exit_line"]
+# Zone = Literal["dining_zone", "pay_zone", "exit_band", "exit_line"]
+Zone = Literal["dining_zone", "pay_zone", "door"]
 ZONES: dict[int, Zone] = {
     ord("1"): "dining_zone",
     ord("2"): "pay_zone",
-    ord("3"): "exit_band",
-    ord("4"): "exit_line",
+    # ord("3"): "exit_band",
+    # ord("4"): "exit_line",
+    ord("3"): "door",
 }
 
 
@@ -42,10 +44,12 @@ class Calibration:
     def apply(self) -> None:
         settings = self.config.model_dump()
         settings[self.zone] = self.points.copy()
-        if self.zone == "exit_line":
-            settings["exit_band"] = None
-        elif self.zone == "exit_band":
-            settings["exit_line"] = None
+        # if self.zone == "exit_line":
+        #     settings["exit_band"] = None
+        # elif self.zone == "exit_band":
+        #     settings["exit_line"] = None
+        if self.zone == "door":
+                    settings["door"] = None
         self.config = WalkoutConfig.model_validate(settings)
         self.points.clear()
         self.message = "Zone applied. Choose another zone or press S to save."
@@ -56,8 +60,9 @@ def draw_calibration(frame: Frame, calibration: Calibration) -> Frame:
     for name, points, color in (
         ("DINING", calibration.config.dining_zone, (255, 205, 90)),
         ("PAY", calibration.config.pay_zone, (110, 235, 130)),
-        ("EXIT", calibration.config.exit_band or calibration.config.exit_line, (100, 180, 255)),
-        ("", calibration.points, (255, 255, 255)),
+        ("DOOR", calibration.config.door, (100, 180, 130)),
+        # ("EXIT", calibration.config.exit_band or calibration.config.exit_line, (100, 180, 255)),
+        # ("", calibration.points, (255, 255, 255)),
     ):
         if points:
             pixels = np.array([(round(x * (width - 1)), round(y * (height - 1))) for x, y in points], np.int32)

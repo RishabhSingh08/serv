@@ -31,6 +31,7 @@ class State:
         self.profiles: dict[int, Profile] = {}
         self.cameras: dict[str, CameraFeed] = {}
         self.floor: dict[str, object] | None = None
+        self.walkout_enabled = True
         self.door_counts: dict[str, int] | None = None
 
     def publish_door_counts(self, came_in: int, left: int) -> None:

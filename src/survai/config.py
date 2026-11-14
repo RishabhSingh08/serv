@@ -97,6 +97,8 @@ class CameraConfig(BaseModel):
     name: str
     source: int | str
     mirror: bool = True
+    enabled: bool = True
+    employee_marker: bool = False
     walkout_enabled: bool = True
     zones: dict[str, object] = Field(default_factory=dict)
     floor_points: list[NormalizedPoint] | None = Field(default=None, min_length=4, max_length=4)
@@ -162,7 +164,7 @@ class FloorCalibration(BaseModel):
 class MultiCameraConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    cameras: list[CameraConfig] = Field(min_length=2, max_length=4)
+    cameras: list[CameraConfig] = Field(min_length=1, max_length=4)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     walkout: WalkoutConfig | None = None
     image_size: int = Field(default=416, ge=32, multiple_of=32)
@@ -170,15 +172,21 @@ class MultiCameraConfig(BaseModel):
     fusion: FusionConfig = Field(default_factory=FusionConfig)
     calibration: FloorCalibration | None = None
 
+    @property
+    def active_cameras(self) -> list[CameraConfig]:
+        return [camera for camera in self.cameras if camera.enabled]
+
     @model_validator(mode="after")
     def unique_cameras(self) -> Self:
+        if not self.active_cameras:
+            raise ValueError("Keep at least one camera enabled")
         if len({camera.id for camera in self.cameras}) != len(self.cameras):
             raise ValueError("Each camera needs a unique id")
         if any(camera.id == "grid" for camera in self.cameras):
             raise ValueError("Camera id 'grid' is reserved for the combined feed")
         if sum(camera.door_line is not None for camera in self.cameras) > 1:
             raise ValueError("Choose one camera to count doorway crossings")
-        indexes = [int(str(camera.source)) for camera in self.cameras if str(camera.source).isdecimal()]
+        indexes = [int(str(camera.source)) for camera in self.active_cameras if str(camera.source).isdecimal()]
         if len(set(indexes)) != len(indexes):
             raise ValueError("Each live camera needs a different index")
         if any(isinstance(camera.source, int) and camera.source < 0 for camera in self.cameras):

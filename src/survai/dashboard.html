@@ -78,6 +78,7 @@
       background: var(--panel);
       color: var(--muted);
     }
+    #status[hidden], #mark-paid[hidden], #history-panel[hidden] { display: none }
     #status.clear { color: var(--mint); border-color: #2e5e53 }
     #status.alert { color: var(--red); border-color: #8c4352; background: #38212d }
     #status.clear::before, #status.alert::before {
@@ -118,6 +119,8 @@
     #camera-status, time { color: var(--muted) }
     .viewport { padding: 10px; background: #0c131f }
     .camera-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px }
+    .camera-grid.single { grid-template-columns: 1fr }
+    .layout.people-only { grid-template-columns: minmax(0, 1fr) }
     .camera-grid figure { margin: 0 }
     .camera-grid figcaption { color: var(--muted); font: 12px var(--mono); padding: 8px 2px }
     .camera-grid img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: contain; background: #070c14 }
@@ -197,7 +200,7 @@
       </p>
       <div class="viewport"><img id="feed" alt="Annotated camera feed"></div>
     </section>
-    <section class="panel" aria-labelledby="history-heading">
+    <section class="panel" id="history-panel" aria-labelledby="history-heading">
       <div class="panel-head"><h2 id="history-heading">Alert history</h2></div>
       <div class="history-body">
         <p id="error" role="alert" hidden></p>
@@ -206,7 +209,7 @@
       </div>
     </section>
     <section class="panel visits-panel" aria-labelledby="visits-heading">
-      <div class="panel-head"><h2 id="visits-heading">Guests in view</h2></div>
+      <div class="panel-head"><h2 id="visits-heading">Guests in view</h2><span id="guest-count" hidden></span></div>
       <div class="history-body">
         <p id="visits-empty">No guests in view.</p>
         <div id="visits"></div>
@@ -225,26 +228,28 @@
   const error = document.querySelector('#error');
   const visits = document.querySelector('#visits');
   let lastVisitCards = '';
-  function renderVisits(profiles, includeHidden = false) {
+  function renderVisits(profiles, includeHidden = false, peopleOnly = false) {
     const cards = profiles.filter(profile => includeHidden || profile.visible).map(profile => [
       profile.track_id, profile.state, profile.first_seen, profile.cameras || [], profile.visible,
-      profile.dwell_seconds == null ? null : Math.floor(profile.dwell_seconds), profile.employee,
+      profile.dwell_seconds == null ? null : Math.floor(profile.dwell_seconds), profile.employee, peopleOnly,
     ]);
     const signature = JSON.stringify(cards);
     if (signature === lastVisitCards) return;
     lastVisitCards = signature;
     document.querySelector('#visits-empty').hidden = cards.length > 0;
-    visits.replaceChildren(...cards.map(([id, state, firstSeen, cameras, visible, dwell, employee]) => {
+    visits.replaceChildren(...cards.map(([id, state, firstSeen, cameras, visible, dwell, employee, peopleOnly]) => {
       const card = document.createElement('article');
       if (!visible) card.className = 'out-of-view';
       const title = document.createElement('strong');
-      title.textContent = `${employee ? "Employee" : "Guest"} #${id}`;
+      title.textContent = `${employee ? "Employee" : peopleOnly ? "Customer" : "Guest"} #${id}`;
       const status = document.createElement('p');
       status.textContent = state;
       const time = document.createElement('p');
       time.textContent = `First seen ${new Date(firstSeen).toLocaleTimeString()}`;
-      card.append(title, status, time);
-      if (includeHidden || cameras.length) {
+      card.append(title);
+      if (!peopleOnly) card.append(status);
+      card.append(time);
+      if (!peopleOnly && (includeHidden || cameras.length)) {
         const details = document.createElement('p');
         details.textContent = visible
           ? [...cameras.map(camera => camera.toUpperCase()), `${dwell}s dining`].join(' · ')
@@ -378,6 +383,17 @@
       const response = await fetch('/api/status', { cache: 'no-store' });
       if (!response.ok) throw new Error('Status request failed');
       const current = await response.json();
+      const peopleOnly = current.walkout_enabled === false;
+      document.querySelector('.layout').classList.toggle('people-only', peopleOnly);
+      document.querySelector('#history-panel').hidden = peopleOnly;
+      status.hidden = peopleOnly;
+      markPaid.hidden = peopleOnly;
+      const guestCount = document.querySelector('#guest-count');
+      guestCount.hidden = !peopleOnly;
+      const countText = `${current.customers_in_view} ${current.customers_in_view === 1 ? 'guest' : 'guests'}`;
+      if (guestCount.textContent !== countText) guestCount.textContent = countText;
+      document.querySelector('#visits-heading').textContent = peopleOnly ? 'People in view' : 'Guests in view';
+      document.querySelector('#visits-empty').textContent = peopleOnly ? 'No people in view.' : 'No guests in view.';
       const door = current.door_counts;
       document.querySelector('#door-counts').hidden = !door;
       if (door) {
@@ -394,7 +410,7 @@
       const visitsResponse = await fetch('/api/visits', { cache: 'no-store' });
       const floorResponse = await fetch('/api/floor', { cache: 'no-store' });
       const floor = floorResponse.ok ? await floorResponse.json() : null;
-      if (visitsResponse.ok) renderVisits(await visitsResponse.json(), floor !== null);
+      if (visitsResponse.ok) renderVisits(await visitsResponse.json(), floor !== null, peopleOnly);
       if (floor !== null) renderFloor(floor);
       else document.querySelector('#floor-panel').hidden = true;
       const cameraResponse = await fetch('/api/cameras', { cache: 'no-store' });
@@ -492,6 +508,7 @@
     if (key !== cameraKey) {
       cameraKey = key;
       viewport.classList.add('camera-grid');
+      viewport.classList.toggle('single', cameras.length === 1);
       viewport.replaceChildren(...cameras.map(camera => {
         const tile = document.createElement('figure');
         const caption = document.createElement('figcaption');

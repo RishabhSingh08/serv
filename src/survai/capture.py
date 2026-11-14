@@ -21,10 +21,11 @@ class Capture:
             self.device = cv2.VideoCapture(source)
         if not self.device.isOpened():
             self.close()
-            hint = ""
-            if self.live and sys.platform == "darwin":
-                hint = " Grant your terminal or IDE access in System Settings > Privacy & Security > Camera."
-            raise RuntimeError(f"Could not open source {source!r}.{hint}")
+            if self.live:
+                raise RuntimeError(
+                    f"Could not open camera index {source}. Check that the camera is connected and available."
+                )
+            raise RuntimeError(f"Could not open video {source!r}.")
         fps = self.device.get(cv2.CAP_PROP_FPS)
         self.fps = fps if 0 < fps < 1000 else 30.0
 

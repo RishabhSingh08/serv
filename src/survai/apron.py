@@ -37,7 +37,8 @@ class ApronColor:
 
 
 class EmployeeLabels:
-    def __init__(self) -> None:
+    def __init__(self, *, sticky: bool = False) -> None:
+        self.sticky = sticky
         self.scores: dict[int, tuple[int, float]] = {}
         self.employees: set[int] = set()
 
@@ -50,5 +51,5 @@ class EmployeeLabels:
             self.scores[guest] = score, now
             if score >= 3:
                 self.employees.add(guest)
-            elif score == 0:
+            elif score == 0 and not self.sticky:
                 self.employees.discard(guest)
