@@ -1,5 +1,4 @@
 import logging
-from dataclasses import dataclass
 from time import monotonic
 
 import cv2
@@ -9,21 +8,9 @@ from ultralytics import YOLO
 
 from .capture import Frame
 from .config import Config
-from .zones import Point
+from .tracks import Track
 
 LOG = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class Track:
-    id: int
-    kind: str
-    box: tuple[float, float, float, float]
-
-    @property
-    def point(self) -> Point:
-        left, top, right, bottom = self.box
-        return ((left + right) / 2, bottom if self.kind == "person" else (top + bottom) / 2)
 
 
 class Vision:
