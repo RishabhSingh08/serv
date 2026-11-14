@@ -107,6 +107,10 @@
     }
     #camera-status, time { color: var(--muted) }
     .viewport { padding: 10px; background: #0c131f }
+    #demo-canvas { width: 100%; height: auto; background: #070c14; border-radius: 8px; display: block }
+    .demo-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 4px 4px }
+    .demo-actions button { padding: 8px 12px; color: var(--mint); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; cursor: pointer }
+    .demo-actions button:disabled { opacity: .45; cursor: default }
     #feed {
       display: block;
       width: 100%;
@@ -185,7 +189,7 @@
       </div>
     </section>
   </div>
-</main><script>
+</main><!-- Hosted demo script --><script>
   const alerts = document.querySelector('#alerts');
   const status = document.querySelector('#status');
   const cameraStatus = document.querySelector('#camera-status');
@@ -273,6 +277,10 @@
   }
 
   async function deleteAlert(id, button) {
+    if (window.startHostedDemo) {
+      deleteHostedAlert(id);
+      return;
+    }
     button.disabled = true;
     error.hidden = true;
     try {
@@ -320,7 +328,9 @@
       renderVisits([]);
     }
   };
-  if (location.protocol === 'file:') {
+  if (window.startHostedDemo) {
+    window.startHostedDemo({ renderVisits, displayAlert, removeAlert, status, cameraStatus });
+  } else if (location.protocol === 'file:') {
     status.textContent = 'Start the demo with --dashboard, then ';
     const link = document.createElement('a');
     link.href = 'http://127.0.0.1:8765/';

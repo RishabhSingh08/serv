@@ -7,4 +7,5 @@ __pycache__/
 *.pt
 /alerts/
 /walkout.local.yaml
+/dist/
 demo.avi

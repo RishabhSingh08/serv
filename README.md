@@ -65,6 +65,10 @@ The count in the top right starts at **0 alerts** each time the app starts. Use 
 
 **Active visits** shows each tracked guest from the first time the camera sees them. When a guest pays, the dashboard shows a cropped photo from an earlier frame. The local process holds active profiles and photos in memory and removes them when the visit ends or the demo resets. The walk-out alert history has its own evidence retention.
 
+## Hosted demo
+
+Vercel builds the dashboard with `node scripts/build-dashboard.mjs`. Add a simulated guest, mark them paid to reveal the earlier sample image, then send them out to remove the visit. A simulated unpaid exit creates a deletable alert. The hosted demo uses browser memory and synthetic images. Start the local Python app to use a real camera.
+
 Alert photos and clips expire after two days by default. Set `evidence_retention_days` in your YAML profile to change it. Cleanup checks file age on startup and hourly while the demo runs. It keeps the JSONL history and raw webcam recordings.
 
 For replay, replace `--camera 0` with `--source backup.mp4` and optionally add `--headless`. The dashboard stays open when replay ends. Press Ctrl+C to exit.
