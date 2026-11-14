@@ -1,5 +1,7 @@
 import logging
+import sys
 from time import monotonic
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -14,17 +16,23 @@ LOG = logging.getLogger(__name__)
 
 
 class Vision:
-    def __init__(self, config: Config) -> None:
-        self.weights = config.weights
-        self.image_size = config.image_size
+    def __init__(
+        self, config: Config | None = None, *, weights: str | None = None, image_size: int = 640,
+    ) -> None:
+        cached = Path(sys.prefix) / "weights" / "yolov8n.pt"
+        default = str(cached) if cached.is_file() else "yolov8n.pt"
+        self.weights = config.weights if config else weights or default
+        self.image_size = config.image_size if config else image_size
+        self.classes = [0, 24, 26, 28] if config else [0]
         self.model = YOLO(self.weights)
         self.device = "mps" if torch.backends.mps.is_available() else "cpu"
         self.started = monotonic()
         self.frames = 0
+        self.reset_tracks = False
 
     def track(self, frame: Frame) -> list[Track]:
         options = dict(
-            persist=True, tracker="bytetrack.yaml", classes=[0, 24, 26, 28],
+            persist=True, tracker="bytetrack.yaml", classes=self.classes,
             imgsz=self.image_size, verbose=False,
         )
         try:
@@ -48,8 +56,6 @@ class Vision:
                 ids.tolist(), boxes.cls.tolist(), boxes.xyxyn.tolist(), strict=True
             )
         ]
-
-    reset_tracks = False
 
     @property
     def fps(self) -> float:

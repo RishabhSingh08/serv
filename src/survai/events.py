@@ -25,6 +25,10 @@ class Event:
     source_seconds: float
     id: str = field(default_factory=lambda: uuid4().hex)
     snapshot_path: str | None = None
+    clip_path: str | None = None
+    clip_status: Literal["pending", "ready", "unavailable", "expired"] | None = None
+    dwell_seconds: float | None = None
+    exit_type: str | None = None
 
 
 class EventEngine:

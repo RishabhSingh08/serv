@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Surveillance.ai</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1019;
+      --panel: #111927;
+      --line: #283548;
+      --ink: #f0f4fb;
+      --muted: #a6b3c8;
+      --mint: #81f4c1;
+      --amber: #ffc781;
+      --red: #ff9eae;
+      --mono: 'IBM Plex Mono', ui-monospace, monospace;
+    }
+    * { box-sizing: border-box }
+    [hidden] { display: none !important }
+    body {
+      margin: 0;
+      background: radial-gradient(ellipse at 24% 0%, #1b293e, transparent 58%), var(--bg);
+      color: var(--ink);
+      font: 15px 'Geist', system-ui, sans-serif;
+      min-height: 100vh;
+    }
+    main { max-width: 1560px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 64px) 48px }
+    h1, h2, p { margin: 0 }
+    .topbar {
+      min-height: 94px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+      padding: 16px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .brand { display: flex; align-items: center; gap: 12px }
+    .brand-mark {
+      width: 39px;
+      height: 39px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #3a7668;
+      border-radius: 11px;
+      background: #142e31;
+    }
+    .brand-mark::before {
+      content: '';
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--mint);
+      border-radius: 50%;
+      box-shadow: 0 0 12px #81f4c14a, inset 0 0 8px #81f4c14a;
+    }
+    h1 { font-size: clamp(20px, 3vw, 26px); letter-spacing: -.05em }
+    h2 { font-size: 16px; font-weight: 650 }
+    a { color: var(--mint); text-underline-offset: 4px }
+    :focus-visible { outline: 2px solid var(--mint); outline-offset: 3px }
+    #status, #camera-status, time { font: 12px var(--mono); font-variant-numeric: tabular-nums }
+    #status {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 10px 13px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--muted);
+    }
+    #status.clear { color: var(--mint); border-color: #2e5e53 }
+    #status.alert { color: var(--red); border-color: #8c4352; background: #38212d }
+    #status.clear::before, #status.alert::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 9px currentColor;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(310px, 1fr);
+      gap: 18px;
+      margin-top: 26px;
+      align-items: start;
+    }
+    .panel {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: var(--panel);
+      overflow: hidden;
+      box-shadow: 0 14px 32px #02050b55;
+    }
+    .panel-head {
+      min-height: 59px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    #camera-status, time { color: var(--muted) }
+    .viewport { padding: 10px; background: #0c131f }
+    #feed {
+      display: block;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      object-fit: contain;
+      background: #070c14;
+      border: 1px solid #28394d;
+      border-radius: 8px;
+    }
+    .history-body { padding: 13px }
+    .visits-panel { grid-column: 1 / -1 }
+    #visits { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr)); gap: 10px }
+    #visits article { grid-template-columns: minmax(0, 1fr) auto }
+    #visits strong { color: var(--mint) }
+    #visits img { width: 58px; height: 72px; object-fit: contain; grid-column: 2; grid-row: 1 / span 3 }
+    #visits p { grid-column: 1 }
+    #visits-empty { color: var(--muted); padding: 10px }
+    #empty { padding: 18px 12px; color: var(--muted) }
+    #error { margin: 0 0 10px; color: var(--red); font-size: 13px }
+    #alerts { display: grid; gap: 10px; max-height: 68vh; overflow: auto; padding: 2px }
+    article {
+      display: grid;
+      gap: 11px;
+      padding: 13px;
+      background: #151f2f;
+      border: 1px solid #304058;
+      border-radius: 9px;
+    }
+    article.warning { border-left: 3px solid var(--amber) }
+    .card-top, .actions { display: flex; align-items: center; justify-content: space-between; gap: 10px }
+    .card-top strong { font-size: 14px; color: var(--amber) }
+    article img { display: block; width: 100%; aspect-ratio: 16 / 8; object-fit: contain; border-radius: 6px; background: #070c14 }
+    article p { line-height: 1.5; color: var(--muted); font-size: 13px }
+    .clip { min-width: 0; color: var(--muted); font-size: 12px }
+    .delete {
+      cursor: pointer;
+      padding: 5px 9px;
+      border: 1px solid #684653;
+      border-radius: 6px;
+      color: #ffb0bd;
+      background: transparent;
+      font: inherit;
+      font-size: 12px;
+    }
+    .delete:hover { background: #482a37 }
+    .delete:disabled { opacity: .55; cursor: wait }
+    @media (max-width: 795px) {
+      .layout { grid-template-columns: 1fr }
+      #alerts { max-height: none }
+    }
+  </style>
+</head>
+<body><main>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span><h1>Surveillance.ai</h1></div>
+    <p id="status" class="clear" role="status">0 alerts</p>
+  </header>
+  <div class="layout">
+    <section class="panel" aria-labelledby="camera-heading">
+      <div class="panel-head"><h2 id="camera-heading">Camera feed</h2><span id="camera-status">Connecting</span></div>
+      <div class="viewport"><img id="feed" alt="Annotated camera feed"></div>
+    </section>
+    <section class="panel" aria-labelledby="history-heading">
+      <div class="panel-head"><h2 id="history-heading">Alert history</h2></div>
+      <div class="history-body">
+        <p id="error" role="alert" hidden></p>
+        <p id="empty">No alerts yet.</p>
+        <div id="alerts" aria-live="polite"></div>
+      </div>
+    </section>
+    <section class="panel visits-panel" aria-labelledby="visits-heading">
+      <div class="panel-head"><h2 id="visits-heading">Active visits</h2></div>
+      <div class="history-body">
+        <p id="visits-empty">No active visits.</p>
+        <div id="visits"></div>
+      </div>
+    </section>
+  </div>
+</main><script>
+  const alerts = document.querySelector('#alerts');
+  const status = document.querySelector('#status');
+  const cameraStatus = document.querySelector('#camera-status');
+  const empty = document.querySelector('#empty');
+  const error = document.querySelector('#error');
+  const visits = document.querySelector('#visits');
+  let lastVisitCards = '';
+  function renderVisits(profiles) {
+    const cards = profiles.map(profile => [
+      profile.track_id, profile.state, profile.visible, profile.first_seen,
+      profile.photo_path, profile.photo_taken_at,
+    ]);
+    const signature = JSON.stringify(cards);
+    if (signature === lastVisitCards) return;
+    lastVisitCards = signature;
+    document.querySelector('#visits-empty').hidden = cards.length > 0;
+    visits.replaceChildren(...cards.map(([id, state, visible, firstSeen, photo, takenAt]) => {
+      const card = document.createElement('article');
+      const title = document.createElement('strong');
+      title.textContent = `Guest #${id}`;
+      const status = document.createElement('p');
+      status.textContent = `${state}${visible ? '' : ' · Out of view'}`;
+      const time = document.createElement('p');
+      time.textContent = `First seen ${new Date(firstSeen).toLocaleTimeString()}`;
+      card.append(title, status, time);
+      if (photo) {
+        const image = document.createElement('img');
+        image.src = photo;
+        image.alt = `Guest #${id} before payment`;
+        image.title = new Date(takenAt).toLocaleString();
+        card.append(image);
+      }
+      return card;
+    }));
+  }
+  const displayAlert = event => {
+    empty.hidden = true;
+    const existing = document.getElementById(`alert-${event.id}`);
+    if (existing) {
+      if (!event.snapshot_path) existing.querySelector('img')?.remove();
+      showClip(existing.querySelector('.clip'), event);
+      return;
+    }
+    const card = document.createElement('article');
+    card.id = `alert-${event.id}`;
+    card.className = event.severity;
+    const heading = document.createElement('div');
+    heading.className = 'card-top';
+    const title = document.createElement('strong');
+    title.textContent = event.type === 'possible_walkout' ? 'Possible walk-out' : event.type.replaceAll('_', ' ');
+    const time = document.createElement('time');
+    time.dateTime = event.timestamp;
+    time.textContent = new Date(event.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    heading.append(title, time);
+    card.append(heading);
+    if (event.snapshot_path) {
+      const image = document.createElement('img');
+      image.src = event.snapshot_path;
+      image.alt = 'Alert snapshot';
+      image.onerror = () => image.remove();
+      card.append(image);
+    }
+    const description = document.createElement('p');
+    description.textContent = event.message;
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    const clip = document.createElement('div');
+    clip.className = 'clip';
+    showClip(clip, event);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'delete';
+    button.textContent = 'Delete';
+    button.setAttribute('aria-label', 'Delete alert');
+    button.onclick = () => deleteAlert(event.id, button);
+    actions.append(clip, button);
+    card.append(description, actions);
+    alerts.prepend(card);
+    if (alerts.childElementCount > 100) alerts.lastElementChild.remove();
+  };
+
+  function removeAlert(id) {
+    document.getElementById(`alert-${id}`)?.remove();
+    empty.hidden = alerts.childElementCount > 0;
+  }
+
+  async function deleteAlert(id, button) {
+    button.disabled = true;
+    error.hidden = true;
+    try {
+      const response = await fetch(`/api/alerts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error('Delete request failed');
+      removeAlert(id);
+      await refresh();
+    } catch {
+      error.textContent = 'Could not delete this alert. Try again.';
+      error.hidden = false;
+      button.disabled = false;
+    }
+  }
+
+  function showClip(container, event) {
+    container.replaceChildren();
+    if (event.clip_status === 'ready' && event.clip_path) {
+      const link = document.createElement('a');
+      link.href = event.clip_path;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = 'Play evidence clip';
+      container.append(link);
+    } else if (event.clip_status) {
+      const labels = { pending: 'Preparing clip…', expired: 'Clip expired', unavailable: 'Clip unavailable' };
+      container.textContent = labels[event.clip_status];
+    }
+  }
+  const refresh = async () => {
+    try {
+      const response = await fetch('/api/status', { cache: 'no-store' });
+      if (!response.ok) throw new Error('Status request failed');
+      const current = await response.json();
+      const count = current.total_alerts;
+      const label = `${count} ${count === 1 ? 'alert' : 'alerts'}`;
+      if (status.textContent !== label) status.textContent = label;
+      status.className = count && current.alert_active ? 'alert' : 'clear';
+      cameraStatus.textContent = current.status === 'Monitoring' ? 'Live' : current.status;
+      const visitsResponse = await fetch('/api/visits', { cache: 'no-store' });
+      if (visitsResponse.ok) renderVisits(await visitsResponse.json());
+    } catch {
+      status.textContent = 'Dashboard disconnected';
+      status.className = '';
+      cameraStatus.textContent = 'Offline';
+      renderVisits([]);
+    }
+  };
+  if (location.protocol === 'file:') {
+    status.textContent = 'Start the demo with --dashboard, then ';
+    const link = document.createElement('a');
+    link.href = 'http://127.0.0.1:8765/';
+    link.textContent = 'open the live dashboard';
+    status.append(link);
+    document.querySelector('.layout').hidden = true;
+  } else {
+    document.querySelector('#feed').src = '/video';
+    const stream = new EventSource('/events');
+    stream.onmessage = message => {
+      const event = JSON.parse(message.data);
+      displayAlert(event);
+    };
+    stream.addEventListener('alert-deleted', message => {
+      removeAlert(message.data);
+      refresh();
+    });
+    refresh();
+    setInterval(refresh, 1000);
+  }
+</script></body>
+</html>
