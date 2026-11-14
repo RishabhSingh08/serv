@@ -3,8 +3,9 @@ cameras:
   name: MacBook
   source: 0
   mirror: true
-  walkout_enabled: false
+  enabled: true
   employee_marker: true
+  walkout_enabled: false
   zones:
     anchor: center
     dining_zone:
@@ -36,14 +37,12 @@ cameras:
       - 0.9925788497217068
     exit_line: null
   floor_points: null
-- id: cam2
-  name: iPhone
-  enabled: false
-  source: 1
-  mirror: true
-  walkout_enabled: false
-  zones: {}
-  floor_points: null
+  door_line:
+  - - 0.918871
+    - 0.014893
+  - - 0.922399
+    - 0.993141
+  apron_color: null
 identity:
   enroll_frames: 10
   match_threshold: 0.45

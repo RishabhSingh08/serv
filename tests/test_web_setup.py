@@ -128,3 +128,29 @@ def test_paused_camera_is_retained_but_never_opened(tmp_path: Path) -> None:
                 assert client.get("/api/status").json()["walkout_enabled"] is False
         finally:
             session.close()
+
+
+def test_doorway_activity_preserves_event_totals_in_newest_first_order(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    from survai.doorway import Crossing
+    from survai.state import DoorActivity
+
+    state = State()
+    stamp = datetime(2026, 11, 14, 20, 41, 5, tzinfo=timezone.utc)
+    state.publish_door_counts(9, 6, 1, [
+        DoorActivity(Crossing(7, "came in", 9, 5), stamp, False, 2),
+        DoorActivity(Crossing(3, "left", 9, 6), stamp, True, 1),
+    ])
+    with TestClient(create_app(state, tmp_path, None)) as client:
+        status = client.get("/api/status").json()
+    assert status["door_counts"] == {"in_store": 3, "came_in": 9, "left": 6, "employees": 1}
+    employee_exit, customer_entry = status["door_activity"]
+    assert employee_exit["employee"] and employee_exit["crossing"]["direction"] == "left"
+    assert customer_entry == {
+        "crossing": {"track_id": 7, "direction": "came in", "came_in": 9, "left": 5},
+        "timestamp": "2026-11-14T20:41:05Z",
+        "employee": False,
+        "employees": 2,
+        "in_store": 4,
+    }

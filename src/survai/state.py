@@ -1,7 +1,9 @@
 from collections import Counter, deque
 from dataclasses import dataclass, replace
+from datetime import datetime
 from threading import Lock
 
+from .doorway import Crossing
 from .events import Event
 from .profiles import Profile
 
@@ -12,6 +14,14 @@ class CameraFeed:
     status: str
     fps: float = 0
     jpeg: bytes | None = None
+
+
+@dataclass(frozen=True)
+class DoorActivity:
+    crossing: Crossing
+    timestamp: datetime
+    employee: bool
+    employees: int
 
 
 class State:
@@ -33,10 +43,17 @@ class State:
         self.floor: dict[str, object] | None = None
         self.walkout_enabled = True
         self.door_counts: dict[str, int] | None = None
+        self.door_activity: deque[DoorActivity] = deque(maxlen=50)
 
-    def publish_door_counts(self, came_in: int, left: int) -> None:
+    def publish_door_counts(
+        self, came_in: int, left: int, employees: int = 0, activity: list[DoorActivity] | None = None,
+    ) -> None:
         with self.lock:
-            self.door_counts = {"came_in": came_in, "left": left}
+            self.door_counts = {
+                "in_store": max(0, came_in - left), "came_in": came_in, "left": left, "employees": employees,
+            }
+            if activity:
+                self.door_activity.extend(activity)
 
     def publish_floor(self, guests: list[dict[str, object]], coverage: dict[str, object]) -> None:
         with self.lock:

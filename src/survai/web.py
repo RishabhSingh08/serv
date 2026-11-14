@@ -276,6 +276,7 @@ class WebSession:
                 with self.state.lock:
                     self.state.status = "Starting cameras and model"
                     self.state.door_counts = None
+                    self.state.door_activity.clear()
             self.worker = Thread(target=run, name=f"web-{mode}", daemon=True)
             self.worker.start()
 

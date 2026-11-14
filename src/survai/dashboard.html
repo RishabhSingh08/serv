@@ -113,8 +113,12 @@
       padding: 0 18px;
       border-bottom: 1px solid var(--line);
     }
-    #door-counts { display: flex; gap: 20px; margin: 0; padding: 0 18px 12px; color: var(--muted) }
-    #door-counts[hidden] { display: none }
+    #door-counts { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 0; padding: 12px 18px; color: var(--muted) }
+    #door-counts[hidden], #door-activity[hidden] { display: none }
+    #door-activity { list-style: none; margin: 0; padding: 0 18px; max-height: 130px; overflow: auto }
+    #door-activity li { padding: 8px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere;
+      font: 12px/1.55 var(--mono); color: var(--muted) }
+    #door-activity li:first-child { color: var(--text) }
     #door-counts strong { color: var(--mint); margin-left: 6px }
     #camera-status, time { color: var(--muted) }
     .viewport { padding: 10px; background: #0c131f }
@@ -195,9 +199,12 @@
     <section class="panel" aria-labelledby="camera-heading">
       <div class="panel-head"><h2 id="camera-heading">Camera feed</h2><span id="camera-status">Connecting</span></div>
       <p id="door-counts" role="status" hidden>
+        <span>In store <strong id="in-store">0</strong></span>
         <span>Came in <strong id="came-in">0</strong></span>
         <span>Left <strong id="left-count">0</strong></span>
+        <span>Employees <strong id="employee-count">0</strong></span>
       </p>
+      <ol id="door-activity" aria-label="Recent doorway activity, newest first" hidden></ol>
       <div class="viewport"><img id="feed" alt="Annotated camera feed"></div>
     </section>
     <section class="panel" id="history-panel" aria-labelledby="history-heading">
@@ -378,6 +385,35 @@
   }
   markPaid.onclick = () => cameraAction('pay');
   stopCameras.onclick = () => cameraAction('stop');
+  let lastDoorActivity = '';
+  const doorTime = new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
+  });
+  function renderDoorway(counts, activity = []) {
+    document.querySelector('#door-counts').hidden = !counts;
+    if (counts) {
+      for (const [id, key] of [
+        ['in-store', 'in_store'], ['came-in', 'came_in'], ['left-count', 'left'], ['employee-count', 'employees'],
+      ]) {
+        const value = String(counts[key] ?? 0);
+        const field = document.getElementById(id);
+        if (field.textContent !== value) field.textContent = value;
+      }
+    }
+    const list = document.querySelector('#door-activity');
+    list.hidden = !counts || !activity.length;
+    const signature = JSON.stringify(activity);
+    if (signature === lastDoorActivity) return;
+    lastDoorActivity = signature;
+    list.replaceChildren(...activity.map(record => {
+      const { crossing, timestamp, employee, in_store, employees } = record;
+      const row = document.createElement('li');
+      const time = doorTime.format(new Date(timestamp));
+      const role = employee ? 'EMPLOYEE' : 'CUSTOMER';
+      row.textContent = `[${time}] ${role} #${crossing.track_id} ${crossing.direction} | In store: ${in_store} | Came in: ${crossing.came_in} | Left: ${crossing.left} | Employees: ${employees}`;
+      return row;
+    }));
+  }
   const refresh = async () => {
     try {
       const response = await fetch('/api/status', { cache: 'no-store' });
@@ -394,14 +430,7 @@
       if (guestCount.textContent !== countText) guestCount.textContent = countText;
       document.querySelector('#visits-heading').textContent = peopleOnly ? 'People in view' : 'Guests in view';
       document.querySelector('#visits-empty').textContent = peopleOnly ? 'No people in view.' : 'No guests in view.';
-      const door = current.door_counts;
-      document.querySelector('#door-counts').hidden = !door;
-      if (door) {
-        const entries = document.querySelector('#came-in');
-        const exits = document.querySelector('#left-count');
-        if (entries.textContent !== String(door.came_in)) entries.textContent = door.came_in;
-        if (exits.textContent !== String(door.left)) exits.textContent = door.left;
-      }
+      renderDoorway(current.door_counts, current.door_activity);
       const count = current.total_alerts;
       const label = `${count} ${count === 1 ? 'alert' : 'alerts'}`;
       if (status.textContent !== label) status.textContent = label;

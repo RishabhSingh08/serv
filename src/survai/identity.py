@@ -64,6 +64,7 @@ class Identity:
     colors: deque[Appearance] = field(default_factory=lambda: deque(maxlen=4))
     last_color_at: float = float("-inf")
     consecutive_frames: int = 1
+    initial_tracks: list[Track] = field(default_factory=list)
     velocity: Point = (0.0, 0.0)
     occluded: bool = False
 
@@ -81,12 +82,14 @@ class PersonIdentities:
         self.identities: dict[int, Identity] = {}
         self.tentative: dict[int, Identity] = {}
         self.hidden_ids: set[int] = set()
+        self.confirmed_paths: dict[int, list[Track]] = {}
         self.next_id = 1
 
     def forget_tracker_ids(self) -> None:
         for identity in self.identities.values():
             identity.raw_id = None
         self.tentative.clear()
+        self.confirmed_paths.clear()
 
     def _unique_tracks(self, tracks: list[Track], now: float) -> list[Track]:
         recent_ids = {
@@ -125,6 +128,7 @@ class PersonIdentities:
             _, _, matched = lap.lapjv(costs, extend_cost=True, cost_limit=1.0)
 
         visible = []
+        self.confirmed_paths.clear()
         next_tentative = {}
         for index, (track, colors) in enumerate(zip(tracks, samples, strict=True)):
             crowded = any(
@@ -140,11 +144,14 @@ class PersonIdentities:
                 else:
                     identity.consecutive_frames += 1
                 self._refresh(identity, track, None if crowded else colors, now)
+                identity.initial_tracks.append(track)
                 if identity.consecutive_frames < MIN_CONFIRMATION_FRAMES:
                     next_tentative[track.id] = identity
                     continue
                 key = self.next_id
                 self.next_id += 1
+                self.confirmed_paths[key] = identity.initial_tracks
+                identity.initial_tracks = []
                 self.identities[key] = identity
             else:
                 key, identity = eligible[match]

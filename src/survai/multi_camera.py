@@ -15,7 +15,7 @@ from .apron import ApronColor, EmployeeLabels
 from .capture import Capture, Frame
 from .config import CameraConfig, MultiCameraConfig, WalkoutConfig
 from .detectors.walkout import ExitType, VisitState, WalkoutDetector
-from .doorway import DoorCounter
+from .doorway import Crossing, DoorCounter
 from .events import Event
 from .employee_marker import PhoneMarker
 from .evidence import Evidence, snapshot_candidates
@@ -28,7 +28,7 @@ from .multi_visit import RoomVisits, Sighting
 from .preview import inference_frame
 from .profiles import VisitProfiles
 from .server import Dashboard
-from .state import CameraFeed, State
+from .state import CameraFeed, DoorActivity, State
 from .tracks import Track
 from .vision import MultiVision
 from .zones import Point, crosses, inside, side
@@ -307,11 +307,17 @@ def run_multi(
             else:
                 detections = vision.batch(updated) if updated else {}
                 projected = {}
+                crossings: list[Crossing] = []
+                door_boxes = {}
                 for key, detected in detections.items():
                     cam = cameras[key]
                     assert cam.image is not None
                     local = cam.local.update(updated[key], detected, now)
                     cam.frame_count += 1
+                    if door is not None and cam is doorway:
+                        crossings = door.update_tracks(local, cam.local.confirmed_paths, cam.hud._anchor, now)
+                        if crossings:
+                            door_boxes = {track.id: track.box for track in local}
                     if len(cameras) == 1:
                         cam.tracks = local
                         continue
@@ -347,10 +353,6 @@ def run_multi(
                     )
                     for key in updated:
                         cameras[key].tracks = global_tracks.get(key, [])
-
-                if door is not None and doorway is not None and doorway.spec.id in updated:
-                    door.update({track.id: doorway.hud._anchor(track) for track in doorway.tracks}, now)
-                    state.publish_door_counts(door.came_in, door.left)
 
                 observations: dict[int, bool] = {}
                 for key in aprons.keys() & updated.keys():
@@ -416,6 +418,15 @@ def run_multi(
                 if events:
                     flash_until = now + 2.5
                 timestamp = datetime.now().astimezone()
+                if door is not None and doorway is not None:
+                    displayed_ids = {track.box: track.id for track in doorway.tracks} if crossings else {}
+                    employee_count = len(employee_ids & visible_cameras.keys())
+                    activity = []
+                    for crossing in crossings:
+                        displayed_id = displayed_ids.get(door_boxes[crossing.track_id])
+                        item = replace(crossing, track_id=displayed_id) if displayed_id is not None else crossing
+                        activity.append(DoorActivity(item, timestamp, displayed_id in employee_ids, employee_count))
+                    state.publish_door_counts(door.came_in, door.left, employee_count, activity)
                 visible = [track for cam in fresh.values() for track in cam.tracks]
                 profiles.update(visible, visits.visits, timestamp)
                 for key, profile in profiles.active.items():

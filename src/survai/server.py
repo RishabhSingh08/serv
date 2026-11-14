@@ -77,6 +77,10 @@ def create_app(state: State, directory: Path, summary_model: str | None) -> Fast
                 "alert_active": state.alert_active,
                 "total_alerts": state.counts.total(),
                 "door_counts": state.door_counts,
+                "door_activity": [
+                    asdict(entry) | {"in_store": entry.crossing.in_store}
+                    for entry in reversed(state.door_activity)
+                ],
                 "walkout_enabled": state.walkout_enabled,
                 "customers_in_view": sum(profile.visible and not profile.employee for profile in state.profiles.values()),
             }

@@ -402,7 +402,7 @@ function renderControls() {
     $('geometry-help').textContent = `${landmarks().length} complete. Click point ${landmarks().length + 1} in ${next.name}, then match the same fixed point in the other feeds. Use at least four widely spaced points on ${plane}.`;
   } else if (doorMode && zoneTarget) {
     $('geometry-help').textContent = (zone?.length || 0) < 2 ?
-      'Click both ends of the doorway line in the preview, where the person’s tracking dot will cross.' :
+      'Click both ends where the tracking dot will cross. Leave some visible space on both sides of the line.' :
       'Click once on the inside of the doorway to set the entry direction, then apply the line.';
   } else if (apronMode && zoneTarget) {
     const help = $('geometry-help');

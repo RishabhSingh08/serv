@@ -1,7 +1,9 @@
 import numpy as np
+import pytest
 
 from survai.apron import ApronColor, EmployeeLabels
-from survai.doorway import DoorCounter
+from survai.doorway import Crossing, DoorCounter
+from survai.identity import PersonIdentities, center
 from survai.tracks import Track
 
 
@@ -11,12 +13,43 @@ def test_door_counts_both_directions_without_jitter_or_lost_track_crossings():
     door.update({1: (0.499, 0.5), 2: (0.6, 0.1)}, 0.1)
     door.update({1: (0.508, 0.5)}, 0.2)
     assert (door.came_in, door.left) == (0, 0)
-    door.update({1: (0.6, 0.5)}, 0.3)
+    assert door.update({1: (0.6, 0.5)}, 0.3) == [Crossing(1, "came in", 1, 0)]
     door.update({1: (0.601, 0.5), 3: (0.6, 0.5)}, 0.9)
     assert (door.came_in, door.left) == (1, 0)
-    door.update({1: (0.4, 0.5)}, 1.0)
+    assert door.update({1: (0.4, 0.5)}, 1.0) == [Crossing(1, "left", 1, 1)]
     door.update({1: (0.39, 0.5)}, 1.1)
     assert (door.came_in, door.left) == (1, 1)
+
+
+@pytest.mark.parametrize(("boxes", "entries"), [
+    # The first two positions were previously discarded by track confirmation.
+    ([(.93, 1.0), (.88, .99), (.83, .96)], 1),
+    # The first box is clipped by the exterior frame edge and already has its center inside.
+    ([(.81, 1.0), (.77, .99), (.73, .97)], 1),
+    # A person already inside who moves away from the doorway is not an entry.
+    ([(.81, .97), (.77, .95), (.73, .92)], 0),
+    # A clipped stationary person does not count as an entry.
+    ([(.81, 1.0), (.81, 1.0), (.81, 1.0)], 0),
+])
+def test_new_track_counts_entry_only_with_a_doorway_approach(boxes, entries):
+    door = DoorCounter(((.92, .2), (.92, .85)))
+    tracker = PersonIdentities(1.5, .08, 5)
+    frame = np.zeros((180, 320, 3), np.uint8)
+
+    for tick, (left, right) in enumerate(boxes):
+        now = tick / 12
+        visible = tracker.update(frame, [Track(42, "person", (left, .2, right, .8))], now)
+        door.update_tracks(visible, tracker.confirmed_paths, lambda track: center(track.box), now)
+        if tick < 2:
+            assert (door.came_in, door.left) == (0, 0)
+
+    assert (door.came_in, door.left) == (entries, 0)
+    if entries:
+        for tick, (left, right) in enumerate([(.87, .99), (.92, 1.0), (.93, 1.0)], start=3):
+            now = tick / 12
+            visible = tracker.update(frame, [Track(42, "person", (left, .2, right, .8))], now)
+            door.update_tracks(visible, tracker.confirmed_paths, lambda track: center(track.box), now)
+        assert (door.came_in, door.left) == (1, 1)
 
 
 def test_apron_match_requires_torso_coverage_and_consistent_observations():
